@@ -18,7 +18,7 @@ channels_col = db['channels']
 users_col = db['users']
 
 # --- ADMIN COMMANDS ---
-@bot.message_count_handler(commands=['start'])
+@bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message, "✅ Admin Panel Active!\n\n/add - Add/Edit Channel & Prices\n/channels - Manage Existing Channels")
 
