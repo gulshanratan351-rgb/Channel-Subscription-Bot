@@ -92,17 +92,6 @@ def cb_add_new(call):
     bot.answer_callback_query(call.id)
     msg = bot.send_message(ADMIN_ID, "Please FORWARD any message from your channel here.")
     bot.register_next_step_handler(msg, get_plans)
-
-def get_plans(message):
-    if message.forward_from_chat:
-        ch_id = message.forward_from_chat.id
-        ch_name = message.forward_from_chat.title
-        msg = bot.send_message(ADMIN_ID, 
-            f"Channel Detected: *{ch_name}*\n\nEnter plans in format (Minutes:Price):\n`Min:Price, Min:Price` \n\n"
-            "Example:\n`1440:99, 43200:199` (1 Day and 30 Days)", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, finalize_channel, ch_id, ch_name)
-    else:
-    bot.send_message(ADMIN_ID, "❌ Error: Message was not forwarded. Use /add to try again.")
     
 def get_plans(message):
     if message.forward_from_chat:
