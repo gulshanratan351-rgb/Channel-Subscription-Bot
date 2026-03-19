@@ -102,21 +102,19 @@ def get_plans(message):
             "Example:\n`1440:99, 43200:199` (1 Day and 30 Days)", parse_mode="Markdown")
         bot.register_next_step_handler(msg, finalize_channel, ch_id, ch_name)
     else:
-        bot.send_message(ADMIN_ID, "❌ Error: Message was not forwarded. Use /add to try again.")
-
-def finalize_channel(message, ch_id, ch_name):
-    try:
-        raw_plans = message.text.split(',')
-        plans_dict = {}
-        for p in raw_plans:
-            t, pr = p.strip().split(':')
-            plans_dict[t] = pr
+    bot.send_message(ADMIN_ID, "❌ Error: Message was not forwarded. Use /add to try again.")
+    
+def get_plans(message):
+    if message.forward_from_chat:
+        ch_id = message.forward_from_chat.id
+        ch_name = message.forward_from_chat.title
+        msg = bot.send_message(ADMIN_ID, 
+            f"Channel Detected: *{ch_name}*\n\nEnter plans in format (Minutes:Price):\nMin:Price, Min:Price\n\nExample:\n`1440:99, 43200:199` (1 Day and 30 Days)",
+            parse_mode="Markdown")
         
-        channels_col.update_one({"channel_id": ch_id}, {"$set": {"name": ch_name, "plans": plans_dict, "admin_id": ADMIN_ID}}, upsert=True)
-        bot_username = bot.get_me().username
-        bot.send_message(ADMIN_ID, f"✅ Setup Successful!\n\nInvite Link for users:\n`https://t.me/{bot_username}?start={ch_id}`", parse_mode="Markdown")
-    except:
-        bot.send_message(ADMIN_ID, "❌ Invalid format. Please use `Min:Price, Min:Price`. Use /add to retry.")
+        bot.register_next_step_handler(msg, lambda m: finalize_channel(m, ch_id, ch_name))
+    else:
+        bot.send_message(ADMIN_ID, "❌ Error: Message forward nahi kiya gaya. Use /add to retry.")
 
 # --- USER: PAYMENT FLOW ---
 
