@@ -6,37 +6,44 @@ from threading import Thread
 import time
 from pymongo import MongoClient
 
-# 🔐 ENV
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-MONGO_URL = os.getenv("MONGO_URL")
+# 🔐 CHANGE ONLY THESE 3
+BOT_TOKEN = "PASTE_BOT_TOKEN"
+CHANNEL_ID = -1001234567890
+MONGO_URL = "mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# 🗄️ DB
+# 🗄️ MongoDB
 client = MongoClient(MONGO_URL)
 db = client["botdb"]
 users_col = db["users"]
 
-# 💰 Plans (minutes : price)
+# 💰 Plans (minutes)
 PLANS = {
-    1440: 30,
-    43200: 199
+    "1 Day - ₹30": 1440,
+    "30 Days - ₹199": 43200
 }
 
 # ▶️ START
 @bot.message_handler(commands=['start'])
 def start(message):
     text = "💳 Available Plans:\n\n"
-    for mins, price in PLANS.items():
-        text += f"{mins//1440} Days = ₹{price}\n"
-
-    text += "\nPayment karne ke liye link par click kare."
-
+    for name in PLANS:
+        text += f"{name}\n"
+    
+    text += "\nPayment link ke liye admin se contact kare."
     bot.send_message(message.chat.id, text)
 
-# 🔥 Webhook (Razorpay)
+# 🔥 TELEGRAM WEBHOOK
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    json_str = request.get_data().decode("UTF-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "OK", 200
+
+# 🔥 RAZORPAY WEBHOOK
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
@@ -52,12 +59,7 @@ def webhook():
 
             users_col.update_one(
                 {"user_id": user_id},
-                {
-                    "$set": {
-                        "expire": expire_time,
-                        "warned": False
-                    }
-                },
+                {"$set": {"expire": expire_time, "warned": False}},
                 upsert=True
             )
 
@@ -65,7 +67,7 @@ def webhook():
 
             bot.send_message(
                 user_id,
-                f"✅ Payment Success!\n\nJoin Link:\n{invite.invite_link}\n\n⏰ Expire: {expire_time}"
+                f"✅ Payment Success!\n\nJoin:\n{invite.invite_link}\n\n⏰ Expire: {expire_time}"
             )
 
     except Exception as e:
@@ -73,11 +75,10 @@ def webhook():
 
     return "OK", 200
 
-# ⏱️ Background Checker
+# ⏱️ CHECKER
 def checker():
     while True:
         now = datetime.utcnow()
-
         users = list(users_col.find())
 
         for user in users:
@@ -113,9 +114,11 @@ def checker():
 
         time.sleep(30)
 
-# ▶️ Thread start
+# ▶️ THREAD START
 Thread(target=checker).start()
 
-# ▶️ Run Flask
+# ▶️ MAIN RUN
 if __name__ == "__main__":
+    bot.remove_webhook()
+    bot.set_webhook(url=f"https://your-app-name.onrender.com/{BOT_TOKEN}")
     app.run(host="0.0.0.0", port=10000)
