@@ -1,108 +1,72 @@
+import os
+import telebot
+from pymongo import MongoClient
 from flask import Flask
 from threading import Thread
+import re
 
+# --- FLASK SERVER FOR RENDER ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "I am alive"
+    return "Bot is Running!"
 
 def run():
-  app.run(host='0.0.0.0',port=8080)
+    app.run(host='0.0.0.0', port=8080)
 
 def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# Sabse niche polling se pehle ise call karein:
-keep_alive()
-
-import os
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pymongo import MongoClient
-import datetime
-
-# --- CONFIGURATION ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# --- BOT LOGIC ---
+TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-UPI_ID = os.getenv("UPI_ID", "your-upi@id")
-CONTACT_USERNAME = os.getenv("CONTACT_USERNAME", "admin_username")
-
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(TOKEN)
 client = MongoClient(MONGO_URI)
 db = client['subscription_bot']
-channels_col = db['channels']
-users_col = db['users']
 
-# --- ADMIN COMMANDS ---
+# --- SMART PARSER (Galti Sudharne Wala Function) ---
+def parse_plans(text):
+    # Ye line text mein se sirf "number:number" dhoondti hai
+    pattern = r'(\d+)\s*[:]\s*(\d+)'
+    matches = re.findall(pattern, text)
+    if not matches:
+        return None
+    return {m[0]: m[1] for m in matches}
+
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "✅ Admin Panel Active!\n\n/add - Add/Edit Channel & Prices\n/channels - Manage Existing Channels")
+    bot.reply_to(message, "✅ Bot Active! Use /add to setup.")
 
 @bot.message_handler(commands=['add'])
 def add_channel(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    msg = bot.send_message(message.chat.id, "Please ensure the bot is an Admin in your channel, then **FORWARD** any message from that channel here.")
-    bot.register_next_step_handler(msg, get_channel_info)
+    msg = bot.reply_to(message, "1. Apne Channel se koi message FORWARD karein.")
+    bot.register_next_step_handler(msg, process_channel)
 
-def get_channel_info(message):
-    if not message.forward_from_chat:
-        bot.reply_to(message, "❌ Please FORWARD a message from the channel.")
-        return
-    
-    ch_id = message.forward_from_chat.id
-    ch_name = message.forward_from_chat.title
-    
-    msg = bot.send_message(message.chat.id, f"Channel Detected: **{ch_name}**\n\nEnter plans in format (Minutes:Price):\nExample: `1440:99, 43200:199` (1 Day and 30 Days)")
-    bot.register_next_step_handler(msg, save_plans, ch_id, ch_name)
+def process_channel(message):
+    if message.forward_from_chat:
+        channel_id = message.forward_from_chat.id
+        channel_name = message.forward_from_chat.title
+        msg = bot.reply_to(message, f"Detected: {channel_name}\nAb Plans likhein. Example: 1440:30, 43200:199 (Aap kuch bhi likh sakte hain, bot sirf numbers utha lega).")
+        bot.register_next_step_handler(msg, save_plans, channel_id, channel_name)
+    else:
+        bot.reply_to(message, "❌ Error: Message forward nahi kiya gaya.")
 
-def save_plans(message, ch_id, ch_name):
-    try:
-        plans_raw = message.text.split(',')
-        plans = {}
-        for p in plans_raw:
-            mins, price = p.strip().split(':')
-            plans[mins] = price
-        
-        channels_col.update_one(
-            {"channel_id": ch_id},
-            {"$set": {"name": ch_name, "plans": plans}},
+def save_plans(message, channel_id, channel_name):
+    plans = parse_plans(message.text)
+    if plans:
+        db.channels.update_one(
+            {'channel_id': channel_id},
+            {'$set': {'name': channel_name, 'plans': plans}},
             upsert=True
         )
-        bot.reply_to(message, f"✅ Setup Successful for **{ch_name}**!")
-    except Exception as e:
-        bot.reply_to(message, "❌ Invalid Format. Use `Min:Price, Min:Price`.")
+        bot.reply_to(message, f"✅ Setup Successful for {channel_name}!\nPlans: {plans}")
+    else:
+        bot.reply_to(message, "❌ Invalid Format! Sirf 'Minutes:Price' likhein.")
 
-# --- USER SIDE (PAYMENT FLOW) ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('select_'))
-def user_pays(call):
-    try:
-        _, ch_id, mins = call.data.split('_')
-        ch_data = channels_col.find_one({"channel_id": int(ch_id)})
-        price = ch_data['plans'][mins]
-        
-        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}%26am={price}%26cu=INR"
-        
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("✅ I Have Paid", callback_data=f"paid_{ch_id}_{mins}"))
-        markup.add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
-        
-        bot.send_photo(
-            call.message.chat.id, 
-            qr_url,
-            caption=f"Plan: {mins} Minutes\nPrice: ₹{price}\n\nUPI ID: `{UPI_ID}`\n\nPlease complete the payment and click 'I Have Paid'.",
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        bot.answer_callback_query(call.id, "Error processing payment.")
-
-# --- POLLING ---
 if __name__ == "__main__":
-    print("Bot is running...")
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    keep_alive() # Flask start karega
+    print("Bot is starting...")
+    bot.infinity_polling()
     
-        
