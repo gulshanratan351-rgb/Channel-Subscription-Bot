@@ -214,4 +214,35 @@ if __name__ == '__main__':
     scheduler.start()
     bot.remove_webhook()
     print("Bot is running...")
-    bot.infinity_polling(timeout=20, long_polling_timeout=10)
+from datetime import datetime
+
+# --- AUTO APPROVE FUNCTION ---
+@app.on_chat_join_request()
+async def auto_approve_prime(client, request):
+    user_id = request.from_user.id
+    chat_id = request.chat.id  # Private Channel ID jahan request aayi hai
+
+    # 1. Database mein user ko dhoondho
+    user_data = users_col.find_one({"user_id": user_id})
+
+    # 2. Check karo ki kya user ke paas Prime hai aur expiry baki hai
+    if user_data and user_data.get('expiry', 0) > datetime.now().timestamp():
+        # ✅ Payment Verified! Turant Approve karo
+        try:
+            await client.approve_chat_join_request(chat_id, user_id)
+            await client.send_message(
+                user_id, 
+                "✅ **Welcome!** Aapka Prime payment verified hai. Aapko channel mein add kar diya gaya hai."
+            )
+        except Exception as e:
+            print(f"Approval Error: {e}")
+    else:
+        # ❌ Payment nahi mila! Reject ya Message bhejo
+        await client.send_message(
+            user_id, 
+            "❌ **Access Denied!**\n\nAapka Prime Subscription active nahi mila.\n"
+            "Pehle payment karein, phir join request bhejein."
+        )
+        if __name__ == "__main__":
+    app.run()
+    
