@@ -33,7 +33,7 @@ db = client['sub_management']
 channels_col = db['channels']
 users_col = db['users']
 
-# --- ADMIN LOGIC ---
+# --- ADMIN PANEL & COMMANDS ---
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
@@ -58,111 +58,101 @@ def start_handler(message):
         except: pass
 
     if user_id == ADMIN_ID:
-        bot.send_message(message.chat.id, "✅ Admin Panel Active!\n\n/add - Add/Edit Channel\n/setlink - Set File Link\n/channels - Manage Channels")
+        bot.send_message(message.chat.id, "✅ Admin Panel Active!\n\n/add - Add Channel\n/setlink - Set File Bot Link\n/channels - List Channels")
     else:
-        bot.send_message(message.chat.id, "Welcome! To join a channel, please use the link provided by the Admin.")
-
-@bot.message_handler(commands=['channels'], func=lambda m: m.from_user.id == ADMIN_ID)
-def list_channels(message):
-    markup = InlineKeyboardMarkup()
-    cursor = channels_col.find({"admin_id": ADMIN_ID})
-    count = 0
-    for ch in cursor:
-        markup.add(InlineKeyboardButton(f"Channel: {ch['name']}", callback_data=f"manage_{ch['channel_id']}"))
-        count += 1
-    markup.add(InlineKeyboardButton("➕ Add New Channel", callback_data="add_new"))
-    bot.send_message(ADMIN_ID, "Your Managed Channels:", reply_markup=markup)
+        bot.send_message(message.chat.id, "Welcome! To join, use the link provided by Admin.")
 
 @bot.message_handler(commands=['add'], func=lambda m: m.from_user.id == ADMIN_ID)
-def add_channel_start(message):
-    msg = bot.send_message(ADMIN_ID, "Please FORWARD any message from that channel (Bot must be Admin there).")
-    bot.register_next_step_handler(msg, get_plans)
-
-@bot.message_handler(commands=['setlink'], func=lambda m: m.from_user.id == ADMIN_ID)
-def set_file_link(message):
-    msg = bot.send_message(ADMIN_ID, "📧 Send your **File Store Bot link**:")
-    bot.register_next_step_handler(msg, save_file_link)
-
-def save_file_link(message):
-    new_link = message.text
-    db['settings'].update_one({"id": "bot_config"}, {"$set": {"file_link": new_link}}, upsert=True)
-    bot.send_message(ADMIN_ID, f"✅ Link Saved:\n`{new_link}`", parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data == "add_new")
-def cb_add_new(call):
-    msg = bot.send_message(ADMIN_ID, "Please FORWARD any message from your channel here.")
+def add_ch(message):
+    msg = bot.send_message(ADMIN_ID, "Forward any message from the channel here (Bot must be Admin).")
     bot.register_next_step_handler(msg, get_plans)
 
 def get_plans(message):
     if message.forward_from_chat:
         ch_id = message.forward_from_chat.id
         ch_name = message.forward_from_chat.title
-        msg = bot.send_message(ADMIN_ID, 
-            f"Channel: *{ch_name}*\nEnter plans (Min:Price):\nExample: `1440:99, 43200:199`", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, finalize_channel, ch_id, ch_name)
-    else:
-        bot.send_message(ADMIN_ID, "❌ Error: Message not forwarded.")
+        msg = bot.send_message(ADMIN_ID, f"Channel: {ch_name}\nEnter Plans (Min:Price):\nExample: `1440:99, 43200:299`")
+        bot.register_next_step_handler(msg, finalize_ch, ch_id, ch_name)
 
-def finalize_channel(message, ch_id, ch_name):
+def finalize_ch(message, ch_id, ch_name):
     try:
-        raw_plans = message.text.split(',')
-        plans_dict = {p.strip().split(':')[0]: p.strip().split(':')[1] for p in raw_plans}
-        channels_col.update_one({"channel_id": ch_id}, {"$set": {"name": ch_name, "plans": plans_dict, "admin_id": ADMIN_ID}}, upsert=True)
-        bot.send_message(ADMIN_ID, f"✅ Setup Successful for {ch_name}!")
-    except:
-        bot.send_message(ADMIN_ID, "❌ Invalid format.")
+        raw = message.text.split(',')
+        plans = {p.strip().split(':')[0]: p.strip().split(':')[1] for p in raw}
+        channels_col.update_one({"channel_id": ch_id}, {"$set": {"name": ch_name, "plans": plans, "admin_id": ADMIN_ID}}, upsert=True)
+        bot.send_message(ADMIN_ID, f"✅ Setup Success for {ch_name}!")
+    except: bot.send_message(ADMIN_ID, "❌ Format Error.")
 
-# --- PAYMENT FLOW ---
+@bot.message_handler(commands=['setlink'], func=lambda m: m.from_user.id == ADMIN_ID)
+def set_link(message):
+    msg = bot.send_message(ADMIN_ID, "Send your **File Store Bot link**:")
+    bot.register_next_step_handler(msg, save_link)
+
+def save_link(message):
+    db['settings'].update_one({"id": "bot_config"}, {"$set": {"file_link": message.text}}, upsert=True)
+    bot.send_message(ADMIN_ID, "✅ Link Saved!")
+
+# --- USER FLOW: PAYMENT & SCREENSHOT ---
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('select_'))
-def user_pays(call):
+def show_qr(call):
     _, ch_id, mins = call.data.split('_')
     ch_data = channels_col.find_one({"channel_id": int(ch_id)})
     price = ch_data['plans'][mins]
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}%26am={price}%26cu=INR"
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("✅ I Have Paid", callback_data=f"paid_{ch_id}_{mins}"))
-    bot.send_photo(call.message.chat.id, qr_url, caption=f"Pay ₹{price} to `{UPI_ID}` and click button.", reply_markup=markup)
+    bot.send_photo(call.message.chat.id, qr_url, caption=f"Pay ₹{price} to `{UPI_ID}` and click below.", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('paid_'))
-def admin_notify(call):
+def ask_screenshot(call):
     _, ch_id, mins = call.data.split('_')
-    user = call.from_user
+    msg = bot.send_message(call.message.chat.id, "📸 **Kripya Payment ka Screenshot yahan bhejein.**")
+    bot.register_next_step_handler(msg, forward_to_admin, ch_id, mins)
+
+def forward_to_admin(message, ch_id, mins):
+    if message.content_type != 'photo':
+        msg = bot.send_message(message.chat.id, "❌ Sirf Photo bhejein!")
+        bot.register_next_step_handler(msg, forward_to_admin, ch_id, mins)
+        return
+    
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("✅ Approve", callback_data=f"app_{user.id}_{ch_id}_{mins}"))
-    markup.add(InlineKeyboardButton("❌ Reject", callback_data=f"rej_{user.id}"))
-    bot.send_message(ADMIN_ID, f"🔔 Payment from {user.first_name}\nPlan: {mins} Mins", reply_markup=markup)
-    bot.send_message(call.message.chat.id, "✅ Request sent to Admin.")
+    markup.add(InlineKeyboardButton("✅ Approve", callback_data=f"app_{message.from_user.id}_{ch_id}_{mins}"))
+    markup.add(InlineKeyboardButton("❌ Reject", callback_data=f"rej_{message.from_user.id}"))
+    
+    bot.send_photo(ADMIN_ID, message.photo[-1].file_id, 
+                   caption=f"🔔 **New Payment!**\nUser: {message.from_user.first_name}\nPlan: {mins} Mins", 
+                   reply_markup=markup)
+    bot.send_message(message.chat.id, "✅ Screenshot Admin ko bhej diya gaya hai.")
+
+# --- APPROVAL & AUTO-APPROVE ---
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('app_'))
-def approve_now(call):
+def approve_user(call):
     _, u_id, ch_id, mins = call.data.split('_')
     u_id, ch_id, mins = int(u_id), int(ch_id), int(mins)
+    
     config = db['settings'].find_one({"id": "bot_config"})
-    final_link = config.get('file_link', 'Link not set!') if config else 'Link not set!'
-    expiry_ts = int((datetime.now() + timedelta(minutes=mins)).timestamp())
-    users_col.update_one({"user_id": u_id, "channel_id": ch_id}, {"$set": {"expiry": expiry_ts}}, upsert=True)
-    bot.send_message(u_id, f"🥳 Approved!\nLink: {final_link}")
-    bot.edit_message_text("✅ Approved!", call.message.chat.id, call.message.message_id)
+    link = config.get('file_link', 'Link not set') if config else 'Link not set'
+    expiry = int((datetime.now() + timedelta(minutes=mins)).timestamp())
+    
+    users_col.update_one({"user_id": u_id, "channel_id": ch_id}, {"$set": {"expiry": expiry}}, upsert=True)
+    bot.send_message(u_id, f"🥳 **Approved!**\nAccess Link: {link}")
+    bot.edit_message_caption("✅ Approved!", call.message.chat.id, call.message.message_id)
 
-# --- AUTO APPROVE LOGIC ---
 @bot.chat_join_request_handler()
-def handle_join_request(request):
+def handle_join(request):
     user_id = request.from_user.id
-    chat_id = request.chat.id
     user_data = users_col.find_one({"user_id": user_id})
     if user_data and user_data.get('expiry', 0) > datetime.now().timestamp():
-        try:
-            bot.approve_chat_join_request(chat_id, user_id)
-            bot.send_message(user_id, "✅ Welcome! Your Prime is active.")
-        except: pass
+        bot.approve_chat_join_request(request.chat.id, user_id)
+        bot.send_message(user_id, "✅ Welcome! Your Prime is active.")
     else:
-        bot.send_message(user_id, "❌ Prime active nahi hai. Pehle pay karein.")
+        bot.send_message(user_id, "❌ Access Denied! Pay first.")
 
-def kick_expired_users():
+def kick_expired():
     now = datetime.now().timestamp()
-    expired_users = users_col.find({"expiry": {"$lte": now}})
-    for user in expired_users:
+    expired = users_col.find({"expiry": {"$lte": now}})
+    for user in expired:
         try:
             bot.ban_chat_member(user['channel_id'], user['user_id'])
             bot.unban_chat_member(user['channel_id'], user['user_id'])
@@ -172,8 +162,8 @@ def kick_expired_users():
 if __name__ == '__main__':
     keep_alive()
     scheduler = BackgroundScheduler()
-    scheduler.add_job(kick_expired_users, 'interval', minutes=1)
+    scheduler.add_job(kick_expired, 'interval', minutes=1)
     scheduler.start()
     print("Bot is running...")
-    bot.infinity_polling(timeout=20, long_polling_timeout=10)
+    bot.infinity_polling(timeout=20)
     
