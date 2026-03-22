@@ -64,7 +64,7 @@ def start_handler(message):
         return
 
     if uid == ADMIN_ID:
-        bot.send_message(uid, "👑 **DV PRIME ADMIN PANEL**\n\n/short - Create Prime File Link\n/stats - Check Active Users\n/broadcast - Message All Users")
+        bot.send_message(uid, "👑 **DV PRIME ADMIN PANEL**\n\n/short - Create Prime File Link\n/stats - Check Active Users\n/broadcast - Message All Users\n/deactivate - Remove User Access")
     else:
         bot.send_message(uid, "👋 Welcome! Click on a file link from our channel to get started.")
 
@@ -120,25 +120,78 @@ def verify_admin(message, fid, mins):
     if message.content_type != 'photo':
         bot.send_message(message.chat.id, "❌ Please send a photo.")
         return
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Approve", callback_data=f"app_{message.from_user.id}_{mins}_{fid}")]])
-    bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=f"New Payment SS!\nPlan: {mins} Mins", reply_markup=markup)
+    
+    # User Details Extraction
+    u_name = message.from_user.first_name
+    u_id = message.from_user.id
+    u_username = f"@{message.from_user.username}" if message.from_user.username else "No Username"
+    
+    caption = (f"📩 **New Payment SS!**\n\n"
+               f"👤 **Name:** {u_name}\n"
+               f"🆔 **User ID:** `{u_id}`\n"
+               f"🔗 **Username:** {u_username}\n"
+               f"⏳ **Plan:** {mins} Mins")
+    
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Approve", callback_data=f"app_{u_id}_{mins}_{fid}")]])
+    bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=caption, parse_mode="Markdown", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('app_'))
 def admin_approve(call):
     _, uid, mins, fid = call.data.split('_')
     exp = int((datetime.now() + timedelta(minutes=int(mins))).timestamp())
-    users_col.update_one({"user_id": int(uid)}, {"$set": {"expiry": exp}}, upsert=True)
+    users_col.update_one({"user_id": int(uid)}, {"$set": {"expiry": exp, "warned": False}}, upsert=True)
     
     link_obj = links_col.find_one({"file_id": fid})
     f_url = link_obj['url'] if link_obj else "File Link"
     
     bot.send_message(int(uid), f"🥳 **Approved!** All links open now.\n\n📂 **Your File:** {f_url}")
-    bot.edit_message_caption("✅ Done", call.message.chat.id, call.message.message_id)
+    bot.edit_message_caption("✅ User Approved Successfully", call.message.chat.id, call.message.message_id)
+
+# --- DEACTIVATE COMMAND ---
+
+@bot.message_handler(commands=['deactivate'], func=lambda m: m.from_user.id == ADMIN_ID)
+def deactivate_cmd(message):
+    msg = bot.send_message(ADMIN_ID, "🚫 Send **User ID** to deactivate:")
+    bot.register_next_step_handler(msg, process_deactivation)
+
+def process_deactivation(message):
+    try:
+        target_id = int(message.text)
+        result = users_col.delete_one({"user_id": target_id})
+        if result.deleted_count > 0:
+            bot.send_message(ADMIN_ID, f"✅ User {target_id} deactivated.")
+            try: bot.send_message(target_id, "⚠️ **Your Prime access has been revoked.**")
+            except: pass
+        else:
+            bot.send_message(ADMIN_ID, "❌ User not found.")
+    except:
+        bot.send_message(ADMIN_ID, "❌ Invalid ID.")
+
+# --- AUTO EXPIRE & WARNING SYSTEM ---
+
+def check_subscriptions():
+    now = datetime.now().timestamp()
+    
+    # 1. Send Warning (10 mins before)
+    warning_limit = (datetime.now() + timedelta(minutes=10)).timestamp()
+    users_to_warn = users_col.find({"expiry": {"$lte": warning_limit, "$gt": now}, "warned": {"$ne": True}})
+    for user in users_to_warn:
+        try:
+            bot.send_message(user['user_id'], "⚠️ **Reminder:** Aapka access 10 minute mein khatam ho jayega. Dubara access ke liye abhi renew karein!")
+            users_col.update_one({"_id": user["_id"]}, {"$set": {"warned": True}})
+        except: pass
+
+    # 2. Final Deactivation
+    expired_users = users_col.find({"expiry": {"$lte": now}})
+    for user in expired_users:
+        try: bot.send_message(user['user_id'], "🚫 **Expired:** Aapka Prime access khatam ho gaya hai. Please renew karein.")
+        except: pass
+        users_col.delete_one({"_id": user["_id"]})
 
 if __name__ == '__main__':
     keep_alive()
     scheduler = BackgroundScheduler()
-    scheduler.add_job(lambda: users_col.delete_many({"expiry": {"$lte": datetime.now().timestamp()}}), 'interval', minutes=5)
+    scheduler.add_job(check_subscriptions, 'interval', minutes=1)
     scheduler.start()
     bot.infinity_polling()
     
