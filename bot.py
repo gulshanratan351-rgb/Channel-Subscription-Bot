@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, request, jsonify
 
-# --- CONFIG ---
+# --- CONFIG (Render Environment Variables se aayega) ---
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONGO_URI = os.getenv('MONGO_URI')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
@@ -26,6 +26,7 @@ app = Flask(__name__)
 @app.route('/')
 def home(): return "Bot is Online!"
 
+# --- WEBHOOK: MacroDroid se data yahan aayega ---
 @app.route('/sms_webhook', methods=['GET', 'POST'])
 def handle_sms():
     try:
@@ -34,14 +35,15 @@ def handle_sms():
             sms_text = request.json.get('message', '').lower()
 
         if sms_text:
-            # Admin ko notification report bhej raha hai
-            bot.send_message(ADMIN_ID, f"📩 **Notification Received:**\n`{sms_text}`")
+            # Admin ko report bhejna (Taaki aap dekh sakein asli text kya aaya)
+            bot.send_message(ADMIN_ID, f"📩 **Notification Check:**\n`{sms_text}`")
 
-            # Paisa (Decimal) dhoondne ka regex: 29.15 ya 99.50
+            # Paise dhoondna (e.g. 29.16)
             amount_match = re.search(r'(\d+\.\d{2})', sms_text)
             
             if amount_match:
                 amt = amount_match.group(1)
+                # Database mein check karna ki ye amount kis user ka hai
                 pay_record = temp_pay_col.find_one({"amount": amt})
                 
                 if pay_record:
@@ -52,15 +54,15 @@ def handle_sms():
                     users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
                     temp_pay_col.delete_one({"_id": pay_record['_id']})
                     
-                    bot.send_message(uid, f"✅ **Payment Verified (₹{amt})!**\nAapka Prime access active ho gaya hai.")
-                    bot.send_message(ADMIN_ID, f"💰 **Auto-Success:** User `{uid}` paid ₹{amt}")
+                    bot.send_message(uid, f"✅ **Payment Verified (₹{amt})!**\nAapka Prime active ho gaya hai.")
+                    bot.send_message(ADMIN_ID, f"💰 **Auto-Approve Success:** User `{uid}` paid ₹{amt}")
                     return "SUCCESS", 200
         
         return "NO MATCH", 200
     except Exception as e:
         return str(e), 500
 
-# --- BOT HANDLERS ---
+# --- BOT COMMANDS ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     uid = message.from_user.id
@@ -77,15 +79,15 @@ def start_handler(message):
                 for mins, price in PLANS.items():
                     label = f"{int(mins)//1440} Day" if int(mins) >= 1440 else f"{mins} Min"
                     markup.add(InlineKeyboardButton(f"💳 {label} - ₹{price}", callback_data=f"p_{fid}_{mins}_{price}"))
-                bot.send_message(uid, "🔒 **Prime Required!**\nPlan choose karein aur exact amount pay karein:", reply_markup=markup)
+                bot.send_message(uid, "🔒 **Prime Required!**\nAuto-approval ke liye naya system active hai. Plan choose karein:", reply_markup=markup)
         return
     
     if uid == ADMIN_ID:
-        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/approve [ID] [Days] - Manual Access")
+        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/approve [ID] [Days] - Manual Approve")
     else:
-        bot.send_message(uid, "👋 Welcome! Kisi link par click karke access paayein.")
+        bot.send_message(uid, "👋 Welcome! Kisi link par click karein access ke liye.")
 
-# --- MANUAL APPROVE COMMAND ---
+# --- MANUAL APPROVE (For old payments) ---
 @bot.message_handler(commands=['approve'], func=lambda m: m.from_user.id == ADMIN_ID)
 def manual_approve(message):
     try:
@@ -94,7 +96,7 @@ def manual_approve(message):
         days = int(args[2])
         exp = int((datetime.now() + timedelta(days=days)).timestamp())
         users_col.update_one({"user_id": target_id}, {"$set": {"expiry": exp}}, upsert=True)
-        bot.send_message(ADMIN_ID, f"✅ User `{target_id}` ko {days} din ka access de diya.")
+        bot.send_message(ADMIN_ID, f"✅ User `{target_id}` active for {days} days.")
         bot.send_message(target_id, "🎉 Admin ne aapka access manually active kar diya hai!")
     except:
         bot.send_message(ADMIN_ID, "❌ Use: `/approve 1234567 30`")
@@ -114,7 +116,7 @@ def handle_pay(call):
     
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ **DHYAN SE:**\nAapko Exactly **₹{unique_price}** hi pay karna hai.\n\nBot 1 min mein auto-approve kar dega.")
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ **DHYAN SE:**\nExactly **₹{unique_price}** hi pay karein.\n\nBot 1 min mein auto-approve kar dega.")
 
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
@@ -124,7 +126,12 @@ def short_cmd(message):
 def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
-    bot.send_message(ADMIN_ID, f"✅ Protected Link: `https://t.me/{bot.get_me().username}?start=vid_{fid}`")
+    bot.send_message(ADMIN_ID, f"✅ Link: `https://t.me/{bot.get_me().username}?start=vid_{fid}`")
+
+@bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
+def stats_cmd(message):
+    active = users_col.count_documents({"expiry": {"$gt": datetime.now().timestamp()}})
+    bot.send_message(ADMIN_ID, f"📊 Active Users: `{active}`")
 
 # --- SCHEDULER & RUN ---
 def clean_up():
