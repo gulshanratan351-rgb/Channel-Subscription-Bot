@@ -17,7 +17,7 @@ client = MongoClient(MONGO_URI)
 db = client['sub_management']
 users_col = db['users']
 links_col = db['short_links']
-utr_col = db['transactions'] # Status track karne ke liye change kiya
+utr_col = db['transactions'] # Status track karne ke liye
 
 PLANS = {"1440": "29", "10080": "99", "43200": "199"}
 
@@ -44,12 +44,12 @@ def handle_sms():
                 uid, mins = pending['user_id'], pending['mins']
                 exp = int((datetime.now() + timedelta(minutes=int(mins))).timestamp())
                 
-                # Payment Verify aur Subscription Active karein
+                # Membership Active Karein
                 users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp, "warned": False}}, upsert=True)
                 utr_col.update_one({"utr": found_utr}, {"$set": {"status": "verified"}})
                 
-                bot.send_message(uid, "✅ **Payment Verified!**\nAccess granted automatically.")
-                bot.send_message(ADMIN_ID, f"💰 **Auto-Success!**\nUser: `{uid}`\nUTR: `{found_utr}`", parse_mode="Markdown")
+                bot.send_message(uid, "✅ **Payment Verified!**\nAapka Prime access active ho gaya hai. Enjoy!")
+                bot.send_message(ADMIN_ID, f"💰 **Auto-Verified!**\nUser: `{uid}`\nUTR: `{found_utr}`\nPlan: {mins} mins")
         
         return jsonify({"status": "ok"}), 200
     except Exception as e:
@@ -78,54 +78,87 @@ def start_handler(message):
                     markup.add(InlineKeyboardButton(f"💳 {label} - ₹{price}", callback_data=f"p_{fid}_{mins}_{price}"))
                 bot.send_message(uid, "🔒 **Prime Required!**\nPay once to access all links:", reply_markup=markup)
         return
+    
     if uid == ADMIN_ID:
-        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short, /stats, /broadcast, /deactivate")
+        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/broadcast - Send Msg\n/deactivate - Remove User")
     else:
-        bot.send_message(uid, "👋 Welcome! Use a file link to start.")
+        bot.send_message(uid, "👋 Welcome! Use a file link to get access.")
 
-# (Baqi Admin Commands Same Rahenge...)
+# --- ADMIN FUNCTIONS ---
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
-    msg = bot.send_message(ADMIN_ID, "🔗 Send File Link:")
+    msg = bot.send_message(ADMIN_ID, "🔗 Send the File Link you want to protect:")
     bot.register_next_step_handler(msg, process_short)
 
 def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
-    bot.send_message(ADMIN_ID, f"✅ Link: `https://t.me/{bot.get_me().username}?start=vid_{fid}`", parse_mode="Markdown")
+    bot.send_message(ADMIN_ID, f"✅ Protected Link Created:\n`https://t.me/{bot.get_me().username}?start=vid_{fid}`", parse_mode="Markdown")
 
-# --- PAYMENT PROCESS (Automatic logic ke saath) ---
+@bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
+def stats_cmd(message):
+    active = users_col.count_documents({"expiry": {"$gt": datetime.now().timestamp()}})
+    bot.send_message(ADMIN_ID, f"📊 Active Prime Users: `{active}`")
+
+@bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
+def bc_cmd(message):
+    msg = bot.send_message(ADMIN_ID, "📢 Send message to broadcast:")
+    bot.register_next_step_handler(msg, do_bc)
+
+def do_bc(message):
+    count = 0
+    for u in users_col.find({}):
+        try:
+            bot.copy_message(u['user_id'], ADMIN_ID, message.message_id)
+            count += 1
+        except: pass
+    bot.send_message(ADMIN_ID, f"✅ Broadcast sent to {count} users.")
+
+# --- PAYMENT PROCESS ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def handle_pay(call):
     _, fid, mins, price = call.data.split('_')
-    qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(f'upi://pay?pa={UPI_ID}&am={price}&cu=INR')}"
+    upi_url = f"upi://pay?pa={UPI_ID}&am={price}&cu=INR"
+    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
+    
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I Have Paid (Enter UTR)", callback_data=f"utr_{fid}_{mins}")]])
-    bot.send_photo(call.message.chat.id, qr, caption=f"💰 Pay ₹{price} & click below to enter UTR for instant access.", reply_markup=markup)
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"💰 **Plan:** {int(mins)//1440} Day(s)\n💵 **Price:** ₹{price}\n\nPay using QR and click the button below to enter your 12-digit UTR.", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('utr_'))
 def ask_utr(call):
-    msg = bot.send_message(call.message.chat.id, "⌨️ Enter 12-digit UTR Number:")
+    msg = bot.send_message(call.message.chat.id, "⌨️ **Enter 12-digit UTR Number:**\n(Check your payment history for the number)")
     bot.register_next_step_handler(msg, verify_utr, call.data.split('_')[1], call.data.split('_')[2])
 
 def verify_utr(message, fid, mins):
     utr = message.text.strip()
     if not utr.isdigit() or len(utr) != 12:
-        bot.send_message(message.chat.id, "❌ Invalid UTR! Must be 12 digits.")
+        bot.send_message(message.chat.id, "❌ **Invalid UTR!**\nUTR 12 digits ka hona chahiye. Phir se try karein.")
         return
     
-    # UTR ko database mein 'pending' status ke saath save karein
-    utr_col.insert_one({"utr": utr, "user_id": message.from_user.id, "mins": mins, "status": "pending"})
-    bot.send_message(message.chat.id, "⏳ Verifying your payment... please wait 10-30 seconds.")
+    # Check if UTR already used
+    if utr_col.find_one({"utr": utr, "status": "verified"}):
+        bot.send_message(message.chat.id, "❌ This UTR has already been used!")
+        return
 
-# --- SUBSCRIPTION CHECKER ---
+    # Add to pending verification
+    utr_col.update_one(
+        {"utr": utr}, 
+        {"$set": {"user_id": message.from_user.id, "mins": mins, "status": "pending"}}, 
+        upsert=True
+    )
+    bot.send_message(message.chat.id, "⏳ **Verifying your payment...**\nPlease wait 10-30 seconds. Access will be granted automatically.")
+
+# --- SCHEDULER ---
 def check_subs():
     now = datetime.now().timestamp()
     users_col.delete_many({"expiry": {"$lte": now}})
 
+# --- START ---
 if __name__ == '__main__':
     threading.Thread(target=run_web).start()
     scheduler = BackgroundScheduler()
     scheduler.add_job(check_subs, 'interval', minutes=1)
     scheduler.start()
+    print("Bot is starting...")
     bot.infinity_polling()
     
