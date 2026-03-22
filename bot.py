@@ -21,46 +21,34 @@ utr_col = db['transactions']
 
 PLANS = {"1440": "29", "10080": "99", "43200": "199"}
 
-# --- SERVER & WEBHOOK (BharatPe Connection) ---
+# --- SERVER & WEBHOOK (MacroDroid Connection) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home(): return "Bot is Online!"
 
-@app.route('/sms_webhook', methods=['GET', 'POST']) # Dono method allow kar diye
+@app.route('/sms_webhook', methods=['GET', 'POST'])
 def handle_sms():
     try:
-        # MacroDroid GET request se data yahan aayega
+        # MacroDroid se message lena
         sms_text = request.args.get('message', '').lower()
-        
-        # Agar POST request hai toh data yahan se nikalega
         if not sms_text and request.is_json:
             sms_text = request.json.get('message', '').lower()
 
-        # SMS se 12-digit UTR nikalna
+        # SMS mein se 12-digit UTR dhoondna
         utr_match = re.search(r'(\d{12})', sms_text)
-        
         if utr_match:
             found_utr = utr_match.group(1)
-            # Database mein check karein
-            pending = utr_col.find_one({"utr": found_utr, "status": "pending"})
-            
-            if pending:
-                uid = pending['user_id']
-                mins = pending['mins']
-                exp = int((datetime.now() + timedelta(minutes=int(mins))).timestamp())
-                
-                # Membership Active Karein
-                users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp, "warned": False}}, upsert=True)
-                utr_col.update_one({"utr": found_utr}, {"$set": {"status": "verified"}})
-                
-                bot.send_message(uid, "✅ **Payment Verified!**\nAapka Prime access active ho gaya hai. Enjoy!")
-                bot.send_message(ADMIN_ID, f"💰 **Auto-Verified!**\nUser: `{uid}`\nUTR: `{found_utr}`")
-                return jsonify({"status": "success", "msg": "verified"}), 200
-        
-        return jsonify({"status": "received", "msg": "no pending utr found"}), 200
+            # Payment ko 'unclaimed' list mein save karna (ताकि user बाद में claim कर सके)
+            utr_col.update_one(
+                {"utr": found_utr}, 
+                {"$set": {"status": "unclaimed", "time": datetime.now()}}, 
+                upsert=True
+            )
+            return "SUCCESS", 200 
+        return "NO UTR FOUND", 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return str(e), 500
 
 def run_web():
     port = int(os.environ.get("PORT", 5000))
@@ -87,9 +75,40 @@ def start_handler(message):
         return
     
     if uid == ADMIN_ID:
-        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/broadcast - Send Msg\n/deactivate - Remove User")
+        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/broadcast - Send Msg")
     else:
         bot.send_message(uid, "👋 Welcome! Use a file link to get access.")
+
+# --- PAYMENT PROCESS (No UTR Mode) ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
+def handle_pay(call):
+    _, fid, mins, price = call.data.split('_')
+    upi_url = f"upi://pay?pa={UPI_ID}&am={price}&cu=INR"
+    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
+    
+    # User sirf is button ko dabayega verify karne ke liye
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Verify Payment (No UTR)", callback_data=f"verify_{mins}")]])
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"💰 **Plan:** {int(mins)//1440} Day(s)\n💵 **Price:** ₹{price}\n\n1. QR scan karke pay karein.\n2. 30-60 second wait karein.\n3. Niche wala button dabayein.", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('verify_'))
+def direct_verify(call):
+    uid = call.from_user.id
+    mins = call.data.split('_')[1]
+    
+    # Pichle 5 minute ki koi bhi unclaimed payment dhundna
+    five_mins_ago = datetime.now() - timedelta(minutes=5)
+    payment = utr_col.find_one({"status": "unclaimed", "time": {"$gt": five_mins_ago}})
+    
+    if payment:
+        exp = int((datetime.now() + timedelta(minutes=int(mins))).timestamp())
+        users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
+        # Payment ko 'verified' mark kar do taki repeat na ho
+        utr_col.update_one({"utr": payment['utr']}, {"$set": {"status": "verified", "user_id": uid}})
+        
+        bot.send_message(uid, "✅ **Payment Verified!**\nAapka Prime access active ho gaya hai. Enjoy!")
+        bot.send_message(ADMIN_ID, f"💰 **Auto-Verified!**\nUser: `{uid}`\nUTR: `{payment['utr']}`")
+    else:
+        bot.answer_callback_query(call.id, "❌ Payment record nahi mila! Thoda wait karke fir try karein.", show_alert=True)
 
 # --- ADMIN FUNCTIONS ---
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
@@ -101,57 +120,6 @@ def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
     bot.send_message(ADMIN_ID, f"✅ Protected Link Created:\n`https://t.me/{bot.get_me().username}?start=vid_{fid}`", parse_mode="Markdown")
-
-@bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
-def stats_cmd(message):
-    active = users_col.count_documents({"expiry": {"$gt": datetime.now().timestamp()}})
-    bot.send_message(ADMIN_ID, f"📊 Active Prime Users: `{active}`")
-
-@bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
-def bc_cmd(message):
-    msg = bot.send_message(ADMIN_ID, "📢 Send message to broadcast:")
-    bot.register_next_step_handler(msg, do_bc)
-
-def do_bc(message):
-    count = 0
-    for u in users_col.find({}):
-        try:
-            bot.copy_message(u['user_id'], ADMIN_ID, message.message_id)
-            count += 1
-        except: pass
-    bot.send_message(ADMIN_ID, f"✅ Broadcast sent to {count} users.")
-
-# --- PAYMENT PROCESS ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
-def handle_pay(call):
-    _, fid, mins, price = call.data.split('_')
-    upi_url = f"upi://pay?pa={UPI_ID}&am={price}&cu=INR"
-    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
-    
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I Have Paid (Enter UTR)", callback_data=f"utr_{fid}_{mins}")]])
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"💰 **Plan:** {int(mins)//1440} Day(s)\n💵 **Price:** ₹{price}\n\nPay using QR and click the button below to enter your 12-digit UTR.", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('utr_'))
-def ask_utr(call):
-    msg = bot.send_message(call.message.chat.id, "⌨️ **Enter 12-digit UTR Number:**\n(Check your payment history for the number)")
-    bot.register_next_step_handler(msg, verify_utr, call.data.split('_')[1], call.data.split('_')[2])
-
-def verify_utr(message, fid, mins):
-    utr = message.text.strip()
-    if not utr.isdigit() or len(utr) != 12:
-        bot.send_message(message.chat.id, "❌ **Invalid UTR!**\nUTR 12 digits ka hona chahiye.")
-        return
-    
-    if utr_col.find_one({"utr": utr, "status": "verified"}):
-        bot.send_message(message.chat.id, "❌ This UTR has already been used!")
-        return
-
-    utr_col.update_one(
-        {"utr": utr}, 
-        {"$set": {"user_id": message.from_user.id, "mins": mins, "status": "pending"}}, 
-        upsert=True
-    )
-    bot.send_message(message.chat.id, "⏳ **Verifying...**\nPay karein aur wait karein. Bot apne aap approve karega.")
 
 # --- SCHEDULER ---
 def check_subs():
@@ -165,4 +133,4 @@ if __name__ == '__main__':
     scheduler.add_job(check_subs, 'interval', minutes=1)
     scheduler.start()
     bot.infinity_polling()
-                           
+    
