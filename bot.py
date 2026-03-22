@@ -17,7 +17,7 @@ client = MongoClient(MONGO_URI)
 db = client['sub_management']
 users_col = db['users']
 links_col = db['short_links']
-utr_col = db['transactions'] # Status track karne ke liye
+utr_col = db['transactions'] 
 
 PLANS = {"1440": "29", "10080": "99", "43200": "199"}
 
@@ -27,21 +27,27 @@ app = Flask(__name__)
 @app.route('/')
 def home(): return "Bot is Online!"
 
-@app.route('/sms_webhook', methods=['POST'])
+@app.route('/sms_webhook', methods=['GET', 'POST']) # Dono method allow kar diye
 def handle_sms():
     try:
-        data = request.json
-        sms_text = data.get('message', '').lower()
+        # MacroDroid GET request se data yahan aayega
+        sms_text = request.args.get('message', '').lower()
+        
+        # Agar POST request hai toh data yahan se nikalega
+        if not sms_text and request.is_json:
+            sms_text = request.json.get('message', '').lower()
+
         # SMS se 12-digit UTR nikalna
         utr_match = re.search(r'(\d{12})', sms_text)
         
         if utr_match:
             found_utr = utr_match.group(1)
-            # Check karein kya koi user is UTR ka wait kar raha hai
+            # Database mein check karein
             pending = utr_col.find_one({"utr": found_utr, "status": "pending"})
             
             if pending:
-                uid, mins = pending['user_id'], pending['mins']
+                uid = pending['user_id']
+                mins = pending['mins']
                 exp = int((datetime.now() + timedelta(minutes=int(mins))).timestamp())
                 
                 # Membership Active Karein
@@ -49,9 +55,10 @@ def handle_sms():
                 utr_col.update_one({"utr": found_utr}, {"$set": {"status": "verified"}})
                 
                 bot.send_message(uid, "✅ **Payment Verified!**\nAapka Prime access active ho gaya hai. Enjoy!")
-                bot.send_message(ADMIN_ID, f"💰 **Auto-Verified!**\nUser: `{uid}`\nUTR: `{found_utr}`\nPlan: {mins} mins")
+                bot.send_message(ADMIN_ID, f"💰 **Auto-Verified!**\nUser: `{uid}`\nUTR: `{found_utr}`")
+                return jsonify({"status": "success", "msg": "verified"}), 200
         
-        return jsonify({"status": "ok"}), 200
+        return jsonify({"status": "received", "msg": "no pending utr found"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -132,21 +139,19 @@ def ask_utr(call):
 def verify_utr(message, fid, mins):
     utr = message.text.strip()
     if not utr.isdigit() or len(utr) != 12:
-        bot.send_message(message.chat.id, "❌ **Invalid UTR!**\nUTR 12 digits ka hona chahiye. Phir se try karein.")
+        bot.send_message(message.chat.id, "❌ **Invalid UTR!**\nUTR 12 digits ka hona chahiye.")
         return
     
-    # Check if UTR already used
     if utr_col.find_one({"utr": utr, "status": "verified"}):
         bot.send_message(message.chat.id, "❌ This UTR has already been used!")
         return
 
-    # Add to pending verification
     utr_col.update_one(
         {"utr": utr}, 
         {"$set": {"user_id": message.from_user.id, "mins": mins, "status": "pending"}}, 
         upsert=True
     )
-    bot.send_message(message.chat.id, "⏳ **Verifying your payment...**\nPlease wait 10-30 seconds. Access will be granted automatically.")
+    bot.send_message(message.chat.id, "⏳ **Verifying...**\nPay karein aur wait karein. Bot apne aap approve karega.")
 
 # --- SCHEDULER ---
 def check_subs():
@@ -159,6 +164,5 @@ if __name__ == '__main__':
     scheduler = BackgroundScheduler()
     scheduler.add_job(check_subs, 'interval', minutes=1)
     scheduler.start()
-    print("Bot is starting...")
     bot.infinity_polling()
-    
+                           
