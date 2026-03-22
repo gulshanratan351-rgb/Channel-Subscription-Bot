@@ -7,10 +7,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask
 from threading import Thread
 
-# --- RENDER KEEP-ALIVE ---
+# --- SERVER KEEP-ALIVE ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is Online and Verified!"
+def home(): return "Bot is Online!"
 
 def run_web():
     port = int(os.environ.get("PORT", 5000))
@@ -31,167 +31,108 @@ client = MongoClient(MONGO_URI)
 db = client['sub_management']
 users_col = db['users']
 links_col = db['short_links']
+utr_col = db['used_utrs']
 
-# --- PLANS CONFIG ---
-PLANS = {
-    "1440": "29",    # 1 Day - ₹29
-    "10080": "99",   # 7 Days - ₹99
-    "43200": "199"   # 30 Days - ₹199
-}
+PLANS = {"1440": "29", "10080": "99", "43200": "199"}
 
 # --- ADMIN COMMANDS ---
-
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     uid = message.from_user.id
     args = message.text.split()
-
-    # FILE ACCESS LOGIC
     if len(args) > 1 and args[1].startswith('vid_'):
         fid = args[1].replace('vid_', '')
         link_obj = links_col.find_one({"file_id": fid})
-        
         if link_obj:
             u_data = users_col.find_one({"user_id": uid})
             if u_data and u_data.get('expiry', 0) > datetime.now().timestamp():
-                bot.send_message(uid, f"✅ **Access Granted!**\n\n📂 **Your File:** {link_obj['url']}")
+                bot.send_message(uid, f"✅ **Access Granted!**\n\n📂 **Link:** {link_obj['url']}")
             else:
                 markup = InlineKeyboardMarkup()
                 for mins, price in PLANS.items():
                     label = f"{int(mins)//1440} Day" if int(mins) >= 1440 else f"{mins} Min"
                     markup.add(InlineKeyboardButton(f"💳 {label} - ₹{price}", callback_data=f"p_{fid}_{mins}_{price}"))
-                bot.send_message(uid, "🔒 **Prime Membership Required!**\n\nEk baar pay karein aur 24h tak saare links access karein:", reply_markup=markup)
+                bot.send_message(uid, "🔒 **Prime Required!**\nPay once to access all links:", reply_markup=markup)
         return
-
     if uid == ADMIN_ID:
-        bot.send_message(uid, "👑 **DV PRIME ADMIN PANEL**\n\n/short - Create Prime File Link\n/stats - Check Active Users\n/broadcast - Message All Users\n/deactivate - Remove User Access")
+        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short, /stats, /broadcast, /deactivate")
     else:
-        bot.send_message(uid, "👋 Welcome! Click on a file link from our channel to get started.")
+        bot.send_message(uid, "👋 Welcome! Use a file link to start.")
 
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
-    msg = bot.send_message(ADMIN_ID, "🔗 Please send the **File Link** you want to shorten:")
-    bot.register_next_step_handler(msg, process_short)
+    msg = bot.send_message(ADMIN_ID, "🔗 Send File Link:")
+    bot.register_next_step_handler(msg, lambda m: process_short(m))
 
 def process_short(message):
-    if not message.text or "t.me" not in message.text:
-        bot.send_message(ADMIN_ID, "❌ Invalid link. Try /short again.")
-        return
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
-    p_link = f"https://t.me/{bot.get_me().username}?start=vid_{fid}"
-    bot.send_message(ADMIN_ID, f"✅ **Prime Link Created!**\n\n`{p_link}`", parse_mode="Markdown")
+    bot.send_message(ADMIN_ID, f"✅ Link: `https://t.me/{bot.get_me().username}?start=vid_{fid}`", parse_mode="Markdown")
 
 @bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
 def stats_cmd(message):
     active = users_col.count_documents({"expiry": {"$gt": datetime.now().timestamp()}})
-    bot.send_message(ADMIN_ID, f"📊 **Active Prime Users:** `{active}`")
+    bot.send_message(ADMIN_ID, f"📊 Active Users: `{active}`")
+
+@bot.message_handler(commands=['deactivate'], func=lambda m: m.from_user.id == ADMIN_ID)
+def deact_cmd(message):
+    msg = bot.send_message(ADMIN_ID, "🚫 Send User ID:")
+    bot.register_next_step_handler(msg, lambda m: (users_col.delete_one({"user_id": int(m.text)}), bot.send_message(ADMIN_ID, "Done")))
 
 @bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
-def broadcast_cmd(message):
-    msg = bot.send_message(ADMIN_ID, "📢 Send the message to broadcast:")
-    bot.register_next_step_handler(msg, do_broadcast)
+def bc_cmd(message):
+    msg = bot.send_message(ADMIN_ID, "📢 Send Message:")
+    bot.register_next_step_handler(msg, do_bc)
 
-def do_broadcast(message):
-    users = users_col.find({})
-    for u in users:
+def do_bc(message):
+    for u in users_col.find({}):
         try: bot.copy_message(u['user_id'], ADMIN_ID, message.message_id)
         except: pass
-    bot.send_message(ADMIN_ID, "✅ Broadcast Done!")
+    bot.send_message(ADMIN_ID, "✅ Sent!")
 
-# --- PAYMENT FLOW ---
-
+# --- PAYMENT ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def handle_pay(call):
     _, fid, mins, price = call.data.split('_')
-    upi_url = f"upi://pay?pa={UPI_ID}&pn=DvPrime&am={price}&cu=INR"
-    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
-    
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I Have Paid", callback_data=f"paid_{fid}_{mins}")]])
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"💰 **Total: ₹{price}**\n\nScan and send screenshot.\nUPI: `{UPI_ID}`", reply_markup=markup)
+    qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(f'upi://pay?pa={UPI_ID}&am={price}&cu=INR')}"
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Enter UTR", callback_data=f"utr_{fid}_{mins}")]])
+    bot.send_photo(call.message.chat.id, qr, caption=f"💰 Pay ₹{price} & Enter UTR", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('paid_'))
-def wait_ss(call):
-    _, fid, mins = call.data.split('_')
-    msg = bot.send_message(call.message.chat.id, "📸 Send Screenshot now:")
-    bot.register_next_step_handler(msg, verify_admin, fid, mins)
+@bot.callback_query_handler(func=lambda call: call.data.startswith('utr_'))
+def ask_utr(call):
+    msg = bot.send_message(call.message.chat.id, "⌨️ Enter 12-digit UTR:")
+    bot.register_next_step_handler(msg, verify_utr, call.data.split('_')[1], call.data.split('_')[2])
 
-def verify_admin(message, fid, mins):
-    if message.content_type != 'photo':
-        bot.send_message(message.chat.id, "❌ Please send a photo.")
+def verify_utr(message, fid, mins):
+    utr = message.text.strip()
+    if utr_col.find_one({"utr": utr}) or not utr.isdigit():
+        bot.send_message(message.chat.id, "❌ Invalid or Used UTR!")
         return
-    
-    # User Details Extraction
-    u_name = message.from_user.first_name
-    u_id = message.from_user.id
-    u_username = f"@{message.from_user.username}" if message.from_user.username else "No Username"
-    
-    caption = (f"📩 **New Payment SS!**\n\n"
-               f"👤 **Name:** {u_name}\n"
-               f"🆔 **User ID:** `{u_id}`\n"
-               f"🔗 **Username:** {u_username}\n"
-               f"⏳ **Plan:** {mins} Mins")
-    
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Approve", callback_data=f"app_{u_id}_{mins}_{fid}")]])
-    bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=caption, parse_mode="Markdown", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('app_'))
-def admin_approve(call):
-    _, uid, mins, fid = call.data.split('_')
+    utr_col.insert_one({"utr": utr, "user_id": message.from_user.id})
     exp = int((datetime.now() + timedelta(minutes=int(mins))).timestamp())
-    users_col.update_one({"user_id": int(uid)}, {"$set": {"expiry": exp, "warned": False}}, upsert=True)
-    
-    link_obj = links_col.find_one({"file_id": fid})
-    f_url = link_obj['url'] if link_obj else "File Link"
-    
-    bot.send_message(int(uid), f"🥳 **Approved!** All links open now.\n\n📂 **Your File:** {f_url}")
-    bot.edit_message_caption("✅ User Approved Successfully", call.message.chat.id, call.message.message_id)
+    users_col.update_one({"user_id": message.from_user.id}, {"$set": {"expiry": exp, "warned": False}}, upsert=True)
+    bot.send_message(message.chat.id, "🥳 Verified! Access Granted.")
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("🚫 Cancel Access", callback_data=f"block_{message.from_user.id}")]])
+    bot.send_message(ADMIN_ID, f"🔔 New Sale!\nID: `{message.from_user.id}`\nUTR: `{utr}`", reply_markup=markup, parse_mode="Markdown")
 
-# --- DEACTIVATE COMMAND ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('block_'))
+def block_btn(call):
+    users_col.delete_one({"user_id": int(call.data.split('_')[1])})
+    bot.answer_callback_query(call.id, "Revoked!")
 
-@bot.message_handler(commands=['deactivate'], func=lambda m: m.from_user.id == ADMIN_ID)
-def deactivate_cmd(message):
-    msg = bot.send_message(ADMIN_ID, "🚫 Send **User ID** to deactivate:")
-    bot.register_next_step_handler(msg, process_deactivation)
-
-def process_deactivation(message):
-    try:
-        target_id = int(message.text)
-        result = users_col.delete_one({"user_id": target_id})
-        if result.deleted_count > 0:
-            bot.send_message(ADMIN_ID, f"✅ User {target_id} deactivated.")
-            try: bot.send_message(target_id, "⚠️ **Your Prime access has been revoked.**")
-            except: pass
-        else:
-            bot.send_message(ADMIN_ID, "❌ User not found.")
-    except:
-        bot.send_message(ADMIN_ID, "❌ Invalid ID.")
-
-# --- AUTO EXPIRE & WARNING SYSTEM ---
-
-def check_subscriptions():
+# --- SCHEDULER ---
+def check_subs():
     now = datetime.now().timestamp()
-    
-    # 1. Send Warning (10 mins before)
-    warning_limit = (datetime.now() + timedelta(minutes=10)).timestamp()
-    users_to_warn = users_col.find({"expiry": {"$lte": warning_limit, "$gt": now}, "warned": {"$ne": True}})
-    for user in users_to_warn:
-        try:
-            bot.send_message(user['user_id'], "⚠️ **Reminder:** Aapka access 10 minute mein khatam ho jayega. Dubara access ke liye abhi renew karein!")
-            users_col.update_one({"_id": user["_id"]}, {"$set": {"warned": True}})
+    warn_time = (datetime.now() + timedelta(minutes=10)).timestamp()
+    for u in users_col.find({"expiry": {"$lte": warn_time, "$gt": now}, "warned": {"$ne": True}}):
+        try: bot.send_message(u['user_id'], "⚠️ 10 mins left!"); users_col.update_one({"_id":u["_id"]},{"$set":{"warned":True}})
         except: pass
-
-    # 2. Final Deactivation
-    expired_users = users_col.find({"expiry": {"$lte": now}})
-    for user in expired_users:
-        try: bot.send_message(user['user_id'], "🚫 **Expired:** Aapka Prime access khatam ho gaya hai. Please renew karein.")
-        except: pass
-        users_col.delete_one({"_id": user["_id"]})
+    users_col.delete_many({"expiry": {"$lte": now}})
 
 if __name__ == '__main__':
     keep_alive()
     scheduler = BackgroundScheduler()
-    scheduler.add_job(check_subscriptions, 'interval', minutes=1)
+    scheduler.add_job(check_subs, 'interval', minutes=1)
     scheduler.start()
     bot.infinity_polling()
     
