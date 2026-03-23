@@ -50,43 +50,53 @@ def handle_sms():
     except Exception as e:
         return str(e), 500
 
-# --- FIXED START HANDLER (Priority to Link) ---
+# --- FIX: Start Handler for Links ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     uid = message.from_user.id
     text = message.text
 
-    # Priority 1: Check if it's a File Link (Start with /start vid_...)
+    # Agar link se aaya hai (/start vid_...)
     if len(text.split()) > 1:
-        parameter = text.split()[1]
-        if parameter.startswith('vid_'):
-            fid = parameter.replace('vid_', '').strip()
+        param = text.split()[1]
+        if param.startswith('vid_'):
+            fid = param.replace('vid_', '').strip()
             link_obj = links_col.find_one({"file_id": fid})
             
             if link_obj:
                 u_data = users_col.find_one({"user_id": uid})
-                # Prime Expiry Check
+                # Prime check
                 if u_data and u_data.get('expiry', 0) > datetime.now().timestamp():
                     bot.send_message(uid, f"✅ **Access Granted!**\n\n📂 **Link:** {link_obj['url']}")
                 else:
-                    # Show Price List for Everyone (Admin or User)
+                    # Payment Menu
                     markup = InlineKeyboardMarkup()
                     for mins, price in PLANS.items():
                         label = f"{int(mins)//1440} Day" if int(mins) >= 1440 else f"{mins} Min"
                         markup.add(InlineKeyboardButton(f"💳 {label} - ₹{price}", callback_data=f"p_{fid}_{mins}_{price}"))
                     bot.send_message(uid, "🔒 **Prime Required!**\nAuto-approval ke liye naya system active hai. Plan choose karein:", reply_markup=markup)
                 return
-            else:
-                bot.send_message(uid, "❌ Sorry, ye link expire ho gaya hai.")
-                return
 
-    # Priority 2: Normal Start for Admin
+    # Normal Start
     if uid == ADMIN_ID:
-        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/approve [ID] [Days] - Manual Approve")
-    
-    # Priority 3: Normal Start for User
+        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/approve [ID] [Days]\n/broadcast - Message All")
     else:
         bot.send_message(uid, "👋 Welcome! Kisi link par click karein access ke liye.")
+
+@bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
+def broadcast_handler(message):
+    msg = bot.send_message(ADMIN_ID, "📢 Sabhi users ko kya message bhejna hai?")
+    bot.register_next_step_handler(msg, send_broadcast)
+
+def send_broadcast(message):
+    all_users = users_col.find({})
+    count = 0
+    for user in all_users:
+        try:
+            bot.send_message(user['user_id'], message.text)
+            count += 1
+        except: continue
+    bot.send_message(ADMIN_ID, f"✅ Broadcast done! {count} users ko mil gaya.")
 
 @bot.message_handler(commands=['approve'], func=lambda m: m.from_user.id == ADMIN_ID)
 def manual_approve(message):
@@ -109,7 +119,7 @@ def handle_pay(call):
     temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": unique_price, "mins": mins, "time": datetime.now()}}, upsert=True)
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ **DHYAN SE:**\nExactly **₹{unique_price}** hi pay karein.\n\nBot 1 min mein auto-approve kar dega.")
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ **DHYAN SE:**\nExactly **₹{unique_price}** hi pay karein.\nBot auto-approve kar dega.")
 
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
