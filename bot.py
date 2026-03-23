@@ -19,13 +19,14 @@ users_col = db['users']
 links_col = db['short_links']
 temp_pay_col = db['temp_payments']
 
+# Plans setup
 PLANS = {"1440": "29", "10080": "99", "43200": "199"}
 app = Flask(__name__)
 
 @app.route('/')
 def home(): return "Bot is Online!"
 
-# --- WEBHOOK: MacroDroid ---
+# --- WEBHOOK: MacroDroid Payment Detection ---
 @app.route('/sms_webhook', methods=['GET', 'POST'])
 def handle_sms():
     try:
@@ -53,16 +54,16 @@ def handle_sms():
     except Exception as e:
         return str(e), 500
 
-# --- BULLETPROOF START HANDLER ---
+# --- FIXED START HANDLER: Prime Check & Expiry ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     uid = message.from_user.id
     text = message.text
     
-    # Check agar link format mein hai
+    # Check agar link format mein hai (start=vid_...)
     if len(text.split()) > 1 and 'vid_' in text:
         try:
-            # ID saaf karna (No symbols/spaces)
+            # ID nikalna aur clean karna
             fid = text.split('vid_')[1].strip().replace('`', '').replace(' ', '')
             link_obj = links_col.find_one({"file_id": fid})
             
@@ -70,26 +71,30 @@ def start_handler(message):
                 u_data = users_col.find_one({"user_id": uid})
                 now_ts = datetime.now().timestamp()
                 
-                # PRIME EXPIRY CHECK
+                # 1. PRIME EXPIRY CHECK (Active User)
                 if u_data and u_data.get('expiry', 0) > now_ts:
                     bot.send_message(uid, f"✅ **Access Granted!**\n\n📂 **Link:** {link_obj['url']}")
+                
+                # 2. IF NOT PRIME OR EXPIRED (Show Menu)
                 else:
-                    # Payment Menu if expired or not a member
                     markup = InlineKeyboardMarkup()
                     for mins, price in PLANS.items():
+                        # Days calculate karna labels ke liye
                         label = f"{int(mins)//1440} Day" if int(mins) >= 1440 else f"{mins} Min"
                         markup.add(InlineKeyboardButton(f"💳 {label} - ₹{price}", callback_data=f"p_{fid}_{mins}_{price}"))
+                    
                     bot.send_message(uid, "🔒 **Prime Required!**\n\nIs file ko dekhne ke liye niche se ek plan select karein:", reply_markup=markup)
             else:
-                bot.send_message(uid, "❌ Error: Ye link database mein nahi mila.")
+                bot.send_message(uid, "❌ Error: Ye file link database mein nahi mila. /short se naya banayein.")
         except Exception as e:
-            bot.send_message(ADMIN_ID, f"⚠️ Start Error: {e}")
+            bot.send_message(ADMIN_ID, f"⚠️ Start Handler Error: {e}")
         return
 
+    # Normal Admin Start
     if uid == ADMIN_ID:
-        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/approve [ID] [Days] - Manual Approve\n/broadcast - Message All")
+        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/approve [ID] [Days]\n/broadcast - Message All")
     else:
-        bot.send_message(uid, "👋 Welcome! File link par click karke access paayein.")
+        bot.send_message(uid, "👋 Welcome! Kisi link par click karke usey unlock karein.")
 
 # --- MANUAL APPROVE ---
 @bot.message_handler(commands=['approve'], func=lambda m: m.from_user.id == ADMIN_ID)
@@ -121,26 +126,28 @@ def send_broadcast(message):
         except: continue
     bot.send_message(ADMIN_ID, f"✅ Broadcast done! {count} users ko mil gaya.")
 
-# --- PAYMENT PROCESS ---
+# --- PAYMENT PROCESS (Unique Amount) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def handle_pay(call):
     _, fid, mins, base_price = call.data.split('_')
     random_extra = random.randint(10, 99)
     unique_price = f"{base_price}.{random_extra}"
+    
     temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": unique_price, "mins": mins, "time": datetime.now()}}, upsert=True)
+    
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ **Exactly ₹{unique_price}** hi pay karein.\nBot auto-approve kar dega.")
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ **Exactly ₹{unique_price}** hi pay karein.\nBot 1 min mein auto-approve kar dega.")
 
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
-    msg = bot.send_message(ADMIN_ID, "🔗 File Link (Mega/Drive) bhejein:")
+    msg = bot.send_message(ADMIN_ID, "🔗 File Link bhejein:")
     bot.register_next_step_handler(msg, process_short)
 
 def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
-    bot.send_message(ADMIN_ID, f"✅ Naya Link:\n`https://t.me/{bot.get_me().username}?start=vid_{fid}`")
+    bot.send_message(ADMIN_ID, f"✅ Link:\n`https://t.me/{bot.get_me().username}?start=vid_{fid}`")
 
 @bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
 def stats_cmd(message):
