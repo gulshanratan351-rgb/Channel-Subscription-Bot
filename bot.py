@@ -10,7 +10,7 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONGO_URI = os.getenv('MONGO_URI')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 UPI_ID = os.getenv('UPI_ID')
-# Render URL: https://channel-subscription-bot-4nav.onrender.com
+# Aapka Render URL
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://channel-subscription-bot-4nav.onrender.com')
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -26,7 +26,7 @@ app = Flask(__name__)
 @app.route('/')
 def home(): return "Bot is Online!"
 
-# --- TELEGRAM WEBHOOK HANDLER ---
+# --- WEBHOOK FOR TELEGRAM ---
 @app.route(f"/{BOT_TOKEN}", methods=['POST'])
 def telegram_webhook():
     if request.headers.get('content-type') == 'application/json':
@@ -36,7 +36,7 @@ def telegram_webhook():
         return "OK", 200
     return "Forbidden", 403
 
-# --- MACRODROID AUTO-APPROVAL WEBHOOK ---
+# --- WEBHOOK FOR MACRODROID (Auto-Approve) ---
 @app.route('/sms_webhook', methods=['GET', 'POST'])
 def handle_sms():
     try:
@@ -61,14 +61,19 @@ def handle_sms():
         return "NO MATCH", 200
     except: return "ERROR", 500
 
-# --- START HANDLER ---
+# --- START HANDLER (With ID Extraction Fix) ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     uid = message.from_user.id
     text = message.text
-    if len(text.split()) > 1 and 'vid_' in text:
-        fid = text.split('vid_')[1].strip()
+
+    # FIX: 'vid_' ke baad ki ID nikalne ke liye (Backticks aur kachra saaf karega)
+    match = re.search(r'vid_([a-zA-Z0-9]+)', text)
+    
+    if match:
+        fid = match.group(1)
         link_obj = links_col.find_one({"file_id": fid})
+        
         if link_obj:
             u_data = users_col.find_one({"user_id": uid})
             if u_data and u_data.get('expiry', 0) > datetime.now().timestamp():
@@ -78,14 +83,16 @@ def start_handler(message):
                 for mins, price in PLANS.items():
                     label = f"{int(mins)//1440} Day" if int(mins) >= 1440 else f"{mins} Min"
                     markup.add(InlineKeyboardButton(f"💳 {label} - ₹{price}", callback_data=f"p_{fid}_{mins}_{price}"))
-                bot.send_message(uid, "🔒 **Prime Required!**\nPlan choose karein:", reply_markup=markup)
-        return
+                bot.send_message(uid, "🔒 **Prime Required!**\nPlan choose karein unlock karne ke liye:", reply_markup=markup)
+            return
+
+    # Normal Start
     if uid == ADMIN_ID:
         bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/broadcast - Message All")
     else:
         bot.send_message(uid, "👋 Welcome! Link par click karein.")
 
-# --- BROADCAST & OTHER FEATURES ---
+# --- BAKI FEATURES (Admin) ---
 @bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
 def broadcast_handler(message):
     msg = bot.send_message(ADMIN_ID, "📢 Kya message bhejna hai?")
@@ -103,7 +110,7 @@ def handle_pay(call):
     unique_price = f"{base_price}.{random.randint(10, 99)}"
     temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": unique_price, "mins": mins, "time": datetime.now()}}, upsert=True)
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Exactly **₹{unique_price}** pay karein.")
 
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
@@ -114,6 +121,11 @@ def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
     bot.send_message(ADMIN_ID, f"✅ Link: `https://t.me/{bot.get_me().username}?start=vid_{fid}`")
+
+@bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
+def stats_cmd(message):
+    active = users_col.count_documents({"expiry": {"$gt": datetime.now().timestamp()}})
+    bot.send_message(ADMIN_ID, f"📊 Total Active Prime: `{active}`")
 
 if __name__ == '__main__':
     bot.remove_webhook()
