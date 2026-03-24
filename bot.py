@@ -34,7 +34,7 @@ def telegram_webhook():
         return "OK", 200
     return "Forbidden", 403
 
-# --- AUTO-APPROVAL FIX (Strict String Match) ---
+# --- AUTO-APPROVAL FIX (With Link Delivery) ---
 @app.route('/sms_webhook', methods=['GET', 'POST'])
 def handle_sms():
     try:
@@ -46,16 +46,25 @@ def handle_sms():
             bot.send_message(ADMIN_ID, f"📩 **SMS Log:**\n`{sms_text}`")
             amount_match = re.search(r'(\d+\.\d{2})', sms_text)
             if amount_match:
-                amt = str(amount_match.group(1)) # Strictly String
-                # Sabse purana aur kaam karne wala matching tarika
+                amt = str(amount_match.group(1)) 
                 pay_record = temp_pay_col.find_one({"amount": amt})
                 if pay_record:
                     uid = pay_record['user_id']
                     mins = int(pay_record['mins'])
+                    fid = pay_record.get('fid') # File ID retrieve ki
+                    
                     exp = int((datetime.now() + timedelta(minutes=mins)).timestamp())
                     users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
                     temp_pay_col.delete_one({"_id": pay_record['_id']})
+                    
+                    # User ko Confirmation aur Link bhejna
                     bot.send_message(uid, "✅ **Payment Verified!** Prime Active.")
+                    
+                    if fid:
+                        link_obj = links_col.find_one({"file_id": fid})
+                        if link_obj:
+                            bot.send_message(uid, f"🎁 **Aapka Link Ye Raha:**\n{link_obj['url']}")
+                    
                     bot.send_message(ADMIN_ID, f"💰 **Approved:** User `{uid}` paid ₹{amt}")
                     return "SUCCESS", 200
         return "NO MATCH", 200
@@ -87,7 +96,7 @@ def start_handler(message):
         bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/broadcast - Message All\n/approve ID Days\n/deactivate ID")
     else: bot.send_message(uid, "👋 Welcome!")
 
-# --- ADMIN COMMANDS (Back Again) ---
+# --- ADMIN COMMANDS ---
 @bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
 def broadcast_cmd(message):
     msg = bot.send_message(ADMIN_ID, "📢 Message bhejein:")
@@ -125,8 +134,8 @@ def process_short(message):
 def handle_pay(call):
     _, fid, mins, base_price = call.data.split('_')
     unique_price = f"{base_price}.{random.randint(10, 99)}"
-    # Humne yahan "fid": fid add kiya hai
-temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": unique_price, "mins": mins, "fid": fid, "time": datetime.now()}}, upsert=True)
+    # fid yahan save ho raha hai
+    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": unique_price, "mins": mins, "fid": fid, "time": datetime.now()}}, upsert=True)
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
     bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
