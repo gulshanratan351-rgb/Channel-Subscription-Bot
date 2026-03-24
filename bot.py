@@ -34,41 +34,37 @@ def telegram_webhook():
         return "OK", 200
     return "Forbidden", 403
 
-# --- AUTO-APPROVAL FIX (Strict String Match) ---
+# --- OLD AUTO-APPROVAL LOGIC ---
 @app.route('/sms_webhook', methods=['GET', 'POST'])
 def handle_sms():
     try:
         sms_text = request.args.get('message', '').lower()
         if not sms_text and request.is_json:
             sms_text = request.json.get('message', '').lower()
-        
         if sms_text:
             bot.send_message(ADMIN_ID, f"📩 **SMS Log:**\n`{sms_text}`")
             amount_match = re.search(r'(\d+\.\d{2})', sms_text)
             if amount_match:
-                amt = str(amount_match.group(1)) # Strictly String
-                # Sabse purana aur kaam karne wala matching tarika
+                amt = amount_match.group(1)
                 pay_record = temp_pay_col.find_one({"amount": amt})
                 if pay_record:
                     uid = pay_record['user_id']
-                    mins = int(pay_record['mins'])
-                    exp = int((datetime.now() + timedelta(minutes=mins)).timestamp())
+                    exp = int((datetime.now() + timedelta(minutes=int(pay_record['mins']))).timestamp())
                     users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
                     temp_pay_col.delete_one({"_id": pay_record['_id']})
-                    bot.send_message(uid, "✅ **Payment Verified!** Prime Active.")
+                    bot.send_message(uid, f"✅ **Payment Verified!** Prime Active.")
                     bot.send_message(ADMIN_ID, f"💰 **Approved:** User `{uid}` paid ₹{amt}")
                     return "SUCCESS", 200
         return "NO MATCH", 200
     except: return "ERROR", 500
 
-# --- START & LINK (Regex Fix) ---
+# --- START HANDLER ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     uid = message.from_user.id
     text = message.text
     if uid != ADMIN_ID:
-        bot.send_message(ADMIN_ID, f"👤 **New User:** `{uid}`")
-
+        bot.send_message(ADMIN_ID, f"👤 **New User Alert!**\nID: `{uid}`")
     match = re.search(r'vid_([a-zA-Z0-9]+)', text)
     if match:
         fid = match.group(1)
@@ -85,20 +81,31 @@ def start_handler(message):
                 bot.send_message(uid, "🔒 **Prime Required!**", reply_markup=markup)
             return
     if uid == ADMIN_ID:
-        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users")
+        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/broadcast - Message All\n/approve ID Days\n/deactivate ID")
     else: bot.send_message(uid, "👋 Welcome!")
 
-# --- QR AUTO-FILL ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
-def handle_pay(call):
-    _, fid, mins, base_price = call.data.split('_')
-    unique_price = f"{base_price}.{random.randint(10, 99)}"
-    # Amount strictly as string for DB matching
-    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": str(unique_price), "mins": mins, "time": datetime.now()}}, upsert=True)
-    
-    upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
-    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
+# --- ADMIN COMMANDS (Back Again) ---
+@bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
+def broadcast_cmd(message):
+    msg = bot.send_message(ADMIN_ID, "📢 Message bhejein:")
+    bot.register_next_step_handler(msg, lambda m: [bot.send_message(u['user_id'], m.text) for u in users_col.find({})])
+
+@bot.message_handler(commands=['approve'], func=lambda m: m.from_user.id == ADMIN_ID)
+def manual_approve(message):
+    try:
+        _, tid, days = message.text.split()
+        exp = int((datetime.now() + timedelta(days=int(days))).timestamp())
+        users_col.update_one({"user_id": int(tid)}, {"$set": {"expiry": exp}}, upsert=True)
+        bot.send_message(ADMIN_ID, f"✅ User {tid} approved for {days} days.")
+    except: bot.send_message(ADMIN_ID, "❌ Use: `/approve ID Days`")
+
+@bot.message_handler(commands=['deactivate'], func=lambda m: m.from_user.id == ADMIN_ID)
+def deactivate_cmd(message):
+    try:
+        tid = int(message.text.split()[1])
+        users_col.delete_one({"user_id": tid})
+        bot.send_message(ADMIN_ID, f"🚫 User {tid} deactivated.")
+    except: bot.send_message(ADMIN_ID, "❌ Use: `/deactivate ID`")
 
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
@@ -109,6 +116,16 @@ def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
     bot.send_message(ADMIN_ID, f"✅ Link: https://t.me/{bot.get_me().username}?start=vid_{fid}")
+
+# --- QR & AUTO-FILL ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
+def handle_pay(call):
+    _, fid, mins, base_price = call.data.split('_')
+    unique_price = f"{base_price}.{random.randint(10, 99)}"
+    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": unique_price, "mins": mins, "time": datetime.now()}}, upsert=True)
+    upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
+    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
 
 if __name__ == '__main__':
     bot.remove_webhook()
