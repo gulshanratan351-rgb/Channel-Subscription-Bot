@@ -25,7 +25,6 @@ app = Flask(__name__)
 @app.route('/')
 def home(): return "Bot is Online!"
 
-# --- WEBHOOKS ---
 @app.route(f"/{BOT_TOKEN}", methods=['POST'])
 def telegram_webhook():
     if request.headers.get('content-type') == 'application/json':
@@ -35,6 +34,7 @@ def telegram_webhook():
         return "OK", 200
     return "Forbidden", 403
 
+# --- OLD AUTO-APPROVAL LOGIC (As per your request) ---
 @app.route('/sms_webhook', methods=['GET', 'POST'])
 def handle_sms():
     try:
@@ -43,33 +43,30 @@ def handle_sms():
             sms_text = request.json.get('message', '').lower()
         
         if sms_text:
-            bot.send_message(ADMIN_ID, f"📩 **SMS Received:**\n`{sms_text}`")
-            # Amount dhundne ki koshish (e.g. 29.15)
+            bot.send_message(ADMIN_ID, f"📩 **SMS Log:**\n`{sms_text}`")
             amount_match = re.search(r'(\d+\.\d{2})', sms_text)
             if amount_match:
                 amt = amount_match.group(1)
-                pay_record = temp_pay_col.find_one({"amount": str(amt)})
+                # OLD STYLE MATCHING
+                pay_record = temp_pay_col.find_one({"amount": amt})
                 if pay_record:
                     uid = pay_record['user_id']
-                    mins = int(pay_record['mins'])
-                    exp = int((datetime.now() + timedelta(minutes=mins)).timestamp())
+                    exp = int((datetime.now() + timedelta(minutes=int(pay_record['mins']))).timestamp())
                     users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
                     temp_pay_col.delete_one({"_id": pay_record['_id']})
-                    bot.send_message(uid, f"✅ **Payment Verified!** ₹{amt} received. Prime Active.")
-                    bot.send_message(ADMIN_ID, f"💰 **Auto-Approve:** User `{uid}` paid ₹{amt}")
+                    bot.send_message(uid, f"✅ **Payment Verified!** Prime Active.")
+                    bot.send_message(ADMIN_ID, f"💰 **Approved:** User `{uid}` paid ₹{amt}")
                     return "SUCCESS", 200
         return "NO MATCH", 200
-    except Exception as e:
-        return str(e), 500
+    except: return "ERROR", 500
 
-# --- HANDLERS ---
+# --- NEW START & LINK STYLE ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     uid = message.from_user.id
     text = message.text
-
     if uid != ADMIN_ID:
-        bot.send_message(ADMIN_ID, f"👤 **User ID:** `{uid}` started the bot.")
+        bot.send_message(ADMIN_ID, f"👤 **New User:** `{uid}`")
 
     match = re.search(r'vid_([a-zA-Z0-9]+)', text)
     if match:
@@ -78,27 +75,25 @@ def start_handler(message):
         if link_obj:
             u_data = users_col.find_one({"user_id": uid})
             if u_data and u_data.get('expiry', 0) > datetime.now().timestamp():
-                bot.send_message(uid, f"✅ **Access Granted!**\n\n📂 **Link:** {link_obj['url']}")
+                bot.send_message(uid, f"✅ **Link:** {link_obj['url']}")
             else:
                 markup = InlineKeyboardMarkup()
                 for mins, price in PLANS.items():
                     label = f"{int(mins)//1440} Day" if int(mins) >= 1440 else f"{mins} Min"
                     markup.add(InlineKeyboardButton(f"💳 {label} - ₹{price}", callback_data=f"p_{fid}_{mins}_{price}"))
-                bot.send_message(uid, "🔒 **Prime Required!**\nPlan choose karein:", reply_markup=markup)
+                bot.send_message(uid, "🔒 **Prime Required!**", reply_markup=markup)
             return
-
     if uid == ADMIN_ID:
-        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/broadcast - Message All\n/approve ID Days\n/deactivate ID")
-    else:
-        bot.send_message(uid, "👋 Welcome! Link par click karke bot use karein.")
+        bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users")
+    else: bot.send_message(uid, "👋 Welcome!")
 
+# --- NEW AUTO-FILL QR STYLE ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def handle_pay(call):
     _, fid, mins, base_price = call.data.split('_')
     unique_price = f"{base_price}.{random.randint(10, 99)}"
     temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": unique_price, "mins": mins, "time": datetime.now()}}, upsert=True)
     
-    # Auto-fill logic
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
     bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
@@ -111,12 +106,8 @@ def short_cmd(message):
 def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
+    # Clean Link - No Comma
     bot.send_message(ADMIN_ID, f"✅ Link: https://t.me/{bot.get_me().username}?start=vid_{fid}")
-
-@bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
-def stats_cmd(message):
-    active = users_col.count_documents({"expiry": {"$gt": datetime.now().timestamp()}})
-    bot.send_message(ADMIN_ID, f"📊 Active Prime: `{active}`")
 
 if __name__ == '__main__':
     bot.remove_webhook()
