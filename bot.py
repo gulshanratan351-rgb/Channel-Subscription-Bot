@@ -34,7 +34,7 @@ def telegram_webhook():
         return "OK", 200
     return "Forbidden", 403
 
-# --- OLD AUTO-APPROVAL LOGIC (As per your request) ---
+# --- AUTO-APPROVAL FIX (Strict String Match) ---
 @app.route('/sms_webhook', methods=['GET', 'POST'])
 def handle_sms():
     try:
@@ -46,21 +46,22 @@ def handle_sms():
             bot.send_message(ADMIN_ID, f"📩 **SMS Log:**\n`{sms_text}`")
             amount_match = re.search(r'(\d+\.\d{2})', sms_text)
             if amount_match:
-                amt = amount_match.group(1)
-                # OLD STYLE MATCHING
+                amt = str(amount_match.group(1)) # Strictly String
+                # Sabse purana aur kaam karne wala matching tarika
                 pay_record = temp_pay_col.find_one({"amount": amt})
                 if pay_record:
                     uid = pay_record['user_id']
-                    exp = int((datetime.now() + timedelta(minutes=int(pay_record['mins']))).timestamp())
+                    mins = int(pay_record['mins'])
+                    exp = int((datetime.now() + timedelta(minutes=mins)).timestamp())
                     users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
                     temp_pay_col.delete_one({"_id": pay_record['_id']})
-                    bot.send_message(uid, f"✅ **Payment Verified!** Prime Active.")
+                    bot.send_message(uid, "✅ **Payment Verified!** Prime Active.")
                     bot.send_message(ADMIN_ID, f"💰 **Approved:** User `{uid}` paid ₹{amt}")
                     return "SUCCESS", 200
         return "NO MATCH", 200
     except: return "ERROR", 500
 
-# --- NEW START & LINK STYLE ---
+# --- START & LINK (Regex Fix) ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     uid = message.from_user.id
@@ -87,12 +88,13 @@ def start_handler(message):
         bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users")
     else: bot.send_message(uid, "👋 Welcome!")
 
-# --- NEW AUTO-FILL QR STYLE ---
+# --- QR AUTO-FILL ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def handle_pay(call):
     _, fid, mins, base_price = call.data.split('_')
     unique_price = f"{base_price}.{random.randint(10, 99)}"
-    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": unique_price, "mins": mins, "time": datetime.now()}}, upsert=True)
+    # Amount strictly as string for DB matching
+    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": str(unique_price), "mins": mins, "time": datetime.now()}}, upsert=True)
     
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
@@ -106,7 +108,6 @@ def short_cmd(message):
 def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
-    # Clean Link - No Comma
     bot.send_message(ADMIN_ID, f"✅ Link: https://t.me/{bot.get_me().username}?start=vid_{fid}")
 
 if __name__ == '__main__':
