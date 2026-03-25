@@ -118,7 +118,16 @@ def deactivate_cmd(message):
         users_col.delete_one({"user_id": tid})
         bot.send_message(ADMIN_ID, f"🚫 User {tid} deactivated.")
     except: bot.send_message(ADMIN_ID, "❌ Use: `/deactivate ID`")
-
+@bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
+def stats_cmd(message):
+    try:
+        total = users_col.count_documents({})
+        # Jo log abhi active hain unka count
+        active = users_col.count_documents({"expiry": {"$gt": datetime.now().timestamp()}})
+        bot.send_message(ADMIN_ID, f"📊 **Bot Stats:**\n\n👥 Total Users: `{total}`\n⚡ Active Prime: `{active}`")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ Error: {str(e)}")
+        
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
     msg = bot.send_message(ADMIN_ID, "🔗 Link bhejein:")
