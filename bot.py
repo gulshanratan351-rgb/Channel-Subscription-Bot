@@ -122,12 +122,17 @@ def deactivate_cmd(message):
 def stats_cmd(message):
     try:
         total = users_col.count_documents({})
-        # Jo log abhi active hain unka count
-        active = users_col.count_documents({"expiry": {"$gt": datetime.now().timestamp()}})
-        bot.send_message(ADMIN_ID, f"📊 **Bot Stats:**\n\n👥 Total Users: `{total}`\n⚡ Active Prime: `{active}`")
+        now = datetime.now().timestamp()
+        active_users = list(users_col.find({"expiry": {"$gt": now}}))
+        
+        msg = f"📊 **Bot Stats:**\n\n👥 Total: `{total}`\n⚡ Active: `{len(active_users)}`"
+        if active_users:
+            msg += "\n\n🆔 **Active IDs:**\n" + "\n".join([f"`{u['user_id']}`" for u in active_users])
+        
+        bot.send_message(ADMIN_ID, msg)
     except Exception as e:
         bot.send_message(ADMIN_ID, f"❌ Error: {str(e)}")
-        
+
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
     msg = bot.send_message(ADMIN_ID, "🔗 Link bhejein:")
@@ -144,7 +149,8 @@ def handle_pay(call):
     _, fid, mins, base_price = call.data.split('_')
     unique_price = f"{base_price}.{random.randint(10, 99)}"
     # fid yahan save ho raha hai
-    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": unique_price, "mins": mins, "fid": fid, "time": datetime.now()}}, upsert=True)
+    # 'unique_price' ke aage str() laga do
+temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, upsert=True)
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
     bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
