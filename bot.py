@@ -150,7 +150,7 @@ def handle_pay(call):
     unique_price = f"{base_price}.{random.randint(10, 99)}"
     # fid yahan save ho raha hai
     # 'unique_price' ke aage str() laga do
-temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, upsert=True)
+    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, upsert=True)
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
     bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
