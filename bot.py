@@ -10,7 +10,7 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONGO_URI = os.getenv('MONGO_URI')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 UPI_ID = os.getenv('UPI_ID')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://channel-subscription-bot-26p2.onrender.com') # Naya URL check kar lena
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://channel-subscription-bot-26p2.onrender.com')
 
 bot = telebot.TeleBot(BOT_TOKEN)
 client = MongoClient(MONGO_URI)
@@ -22,13 +22,12 @@ temp_pay_col = db['temp_payments']
 PLANS = {"1440": "29", "10080": "99", "43200": "199"}
 app = Flask(__name__)
 
-# --- NAYA FUNCTION: 15 Sec baad Screenshot Button dikhane ke liye ---
+# --- TIMER FUNCTION (Screenshot Button ke liye) ---
 def send_screenshot_option(chat_id, user_id):
-    time.sleep(15) # 15 second ka wait
+    time.sleep(15)
     pending_user = temp_pay_col.find_one({"user_id": user_id})
     if pending_user:
         markup = InlineKeyboardMarkup()
-        # Yahan apna username ya support link badal dena
         btn = InlineKeyboardButton("📸 Send Screenshot", url=f"tg://user?id={ADMIN_ID}")
         markup.add(btn)
         bot.send_message(chat_id, "⚠️ **Auto-Approval fail ho gaya?**\n\nAgar 15 second mein activate nahi hua, toh Admin ko screenshot bhejein.", reply_markup=markup)
@@ -45,7 +44,7 @@ def telegram_webhook():
         return "OK", 200
     return "Forbidden", 403
 
-# --- AUTO-APPROVAL FIX ---
+# --- AUTO-APPROVAL LOGIC ---
 @app.route('/sms_webhook', methods=['GET', 'POST'])
 def handle_sms():
     try:
@@ -68,27 +67,27 @@ def handle_sms():
                     users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp_ts}}, upsert=True)
                     temp_pay_col.delete_one({"_id": pay_record['_id']})
                     
-                    # --- NAYA: Approval Confirmation Message ---
-                    days = mins // 1440
-                    plan_text = f"{days} Din" if days > 0 else f"{mins} Minute"
-                    bot.send_message(uid, f"✅ **Prime Activated!**\n\nAapka plan `{plan_text}` ke liye shuru ho gaya hai. Enjoy!")
-                    
+                    bot.send_message(uid, f"✅ **Prime Activated!**\n\nAapka plan shuru ho gaya hai. Enjoy!")
                     if fid:
                         link_obj = links_col.find_one({"file_id": fid})
-                        if link_obj:
-                            bot.send_message(uid, f"🎁 **Aapka Link Ye Raha:**\n{link_obj['url']}")
+                        if link_obj: bot.send_message(uid, f"🎁 **Link:** {link_obj['url']}")
                     
                     bot.send_message(ADMIN_ID, f"💰 **Approved:** User `{uid}` paid ₹{amt}")
                     return "SUCCESS", 200
         return "NO MATCH", 200
     except: return "ERROR", 500
-                
+
+# --- START HANDLER ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     uid = message.from_user.id
     text = message.text
+    
+    # Admin Alert
     if uid != ADMIN_ID:
         bot.send_message(ADMIN_ID, f"👤 **New User Alert!**\nID: `{uid}`")
+    
+    # File Link Logic
     match = re.search(r'vid_([a-zA-Z0-9]+)', text)
     if match:
         fid = match.group(1)
@@ -104,10 +103,14 @@ def start_handler(message):
                     markup.add(InlineKeyboardButton(f"💳 {label} - ₹{price}", callback_data=f"p_{fid}_{mins}_{price}"))
                 bot.send_message(uid, "🔒 **Prime Required!**", reply_markup=markup)
             return
+
+    # Default Start Message
     if uid == ADMIN_ID:
         bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/broadcast - Message All\n/approve ID Days\n/deactivate ID")
-    else: bot.send_message(uid, "👋 Welcome!")
+    else:
+        bot.send_message(uid, "👋 Welcome! Buy Prime to access links.")
 
+# --- ADMIN COMMANDS ---
 @bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
 def broadcast_cmd(message):
     msg = bot.send_message(ADMIN_ID, "📢 Message bhejein:")
@@ -116,20 +119,28 @@ def broadcast_cmd(message):
 @bot.message_handler(commands=['approve'], func=lambda m: m.from_user.id == ADMIN_ID)
 def manual_approve(message):
     try:
-        _, tid, days = message.text.split()
-        exp = int((datetime.now() + timedelta(days=int(days))).timestamp())
-        users_col.update_one({"user_id": int(tid)}, {"$set": {"expiry": exp}}, upsert=True)
-        bot.send_message(int(tid), "✅ **Payment Verified!** Prime Active.")
+        parts = message.text.split()
+        tid, days = int(parts[1]), int(parts[2])
+        exp = int((datetime.now() + timedelta(days=days)).timestamp())
+        users_col.update_one({"user_id": tid}, {"$set": {"expiry": exp}}, upsert=True)
+        bot.send_message(tid, "✅ **Payment Verified!** Prime Active.")
         bot.send_message(ADMIN_ID, f"✅ User {tid} approved for {days} days.")
     except: bot.send_message(ADMIN_ID, "❌ Use: `/approve ID Days`")
+
+@bot.message_handler(commands=['deactivate'], func=lambda m: m.from_user.id == ADMIN_ID)
+def deactivate_cmd(message):
+    try:
+        tid = int(message.text.split()[1])
+        users_col.delete_one({"user_id": tid})
+        bot.send_message(ADMIN_ID, f"🚫 User {tid} deactivated.")
+    except: bot.send_message(ADMIN_ID, "❌ Use: `/deactivate ID`")
 
 @bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
 def stats_cmd(message):
     total = users_col.count_documents({})
     now = datetime.now().timestamp()
-    active_users = list(users_col.find({"expiry": {"$gt": now}}))
-    msg = f"📊 **Bot Stats:**\n\n👥 Total: `{total}`\n⚡ Active: `{len(active_users)}`"
-    bot.send_message(ADMIN_ID, msg)
+    active = users_col.count_documents({"expiry": {"$gt": now}})
+    bot.send_message(ADMIN_ID, f"📊 **Stats:**\nTotal: {total}\nActive: {active}")
 
 @bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
 def short_cmd(message):
@@ -141,7 +152,7 @@ def process_short(message):
     links_col.insert_one({"file_id": fid, "url": message.text})
     bot.send_message(ADMIN_ID, f"✅ Link: https://t.me/{bot.get_me().username}?start=vid_{fid}")
 
-# --- QR & AUTO-FILL ---
+# --- CALLBACK FOR PAYMENT ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def handle_pay(call):
     _, fid, mins, base_price = call.data.split('_')
@@ -152,8 +163,6 @@ def handle_pay(call):
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={urllib.parse.quote(upi_url)}&margin=10"
     
     bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**\n\n15 second wait karein activation ke liye.")
-    
-    # --- NAYA: 15 second ka timer start karo ---
     threading.Thread(target=send_screenshot_option, args=(call.message.chat.id, call.from_user.id)).start()
 
 if __name__ == '__main__':
