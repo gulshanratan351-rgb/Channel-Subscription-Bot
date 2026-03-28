@@ -1,3 +1,9 @@
+"""
+🚀 PROJECT: DV PRIME MANAGEMENT BOT (ULTRALITE EDITION)
+🛠️ FEATURES: Auto-Payment, Multi-FSub, File Storage, Admin Dashboard
+📅 UPDATED: March 2026
+"""
+
 import os
 import telebot
 import urllib.parse
@@ -14,297 +20,236 @@ from pymongo import MongoClient
 from datetime import datetime, timedelta
 from flask import Flask, request
 
-# --- LOGGING SETUP ---
+# ==========================================
+# ⚙️ CONFIGURATION & LOGGING
+# ==========================================
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- CONFIGURATION ---
+# Environment Variables se data uthana
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 MONGO_URI = os.getenv('MONGO_URI')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 UPI_ID = os.getenv('UPI_ID')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 
-# Multiple Channels Support (Comma separated in Render)
-CHANNELS = [c.strip() for c in os.environ.get("CHANNEL", "").split(",") if c.strip()]
+# Channels for Force Join (Comma separated: "channel1,channel2")
+FSUB_CHANNELS = [c.strip() for c in os.environ.get("CHANNELS", "").split(",") if c.strip()]
 
-# Initializing Bot and DB
+# Database Connection
 bot = telebot.TeleBot(BOT_TOKEN)
 client = MongoClient(MONGO_URI)
-db = client['sub_management']
+db = client['dv_prime_db']
 users_col = db['users']
-links_col = db['short_links']
-temp_pay_col = db['temp_payments']
+links_col = db['file_links']
+temp_pay_col = db['pending_payments']
 
+# Subscription Plans
 PLANS = {
-    "1440": {"price": "29", "label": "1 Day"},
-    "10080": {"price": "99", "label": "7 Days"},
-    "43200": {"price": "199", "label": "30 Days"}
+    "1440": {"price": "29", "name": "1 Day Prime"},
+    "10080": {"price": "99", "name": "7 Days Weekly"},
+    "43200": {"price": "199", "name": "30 Days Monthly"}
 }
 
 app = Flask(__name__)
 
-# --- UTILITY FUNCTIONS ---
+# ==========================================
+# 🛠️ HELPER FUNCTIONS
+# ==========================================
 
-def get_expiry_date(minutes):
-    return int((datetime.now() + timedelta(minutes=minutes)).timestamp())
+def is_prime(user_id):
+    """Checks if a user has an active subscription."""
+    user = users_col.find_one({"user_id": user_id})
+    if user and user.get('expiry', 0) > datetime.now().timestamp():
+        return True, user['expiry']
+    return False, 0
 
-def format_timestamp(ts):
-    return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-
-def check_fsub(user_id):
-    """Checks if user joined all required channels."""
-    not_joined = []
-    for channel in CHANNELS:
+def get_fsub_status(user_id):
+    """Checks which channels the user hasn't joined yet."""
+    left_channels = []
+    for channel in FSUB_CHANNELS:
         try:
-            chat_id = channel if channel.startswith("-100") else f"@{channel.replace('@', '')}"
-            member = bot.get_chat_member(chat_id, user_id)
-            if member.status not in ["member", "administrator", "creator", "owner"]:
-                not_joined.append(channel)
+            status = bot.get_chat_member(f"@{channel.replace('@','')}", user_id).status
+            if status not in ['member', 'administrator', 'creator']:
+                left_channels.append(channel)
         except Exception as e:
-            logger.error(f"FSub Check Error for {channel}: {e}")
-            not_joined.append(channel)
-    return not_joined
+            logger.error(f"FSub Error for {channel}: {e}")
+            # Agar bot admin nahi hai toh skip karega
+    return left_channels
 
-# --- TIMER THREAD ---
+# ==========================================
+# 🛰️ WEBHOOKS & AUTO-APPROVAL LOGIC
+# ==========================================
 
-def monitor_payment(chat_id, user_id, unique_amt):
-    """Sends screenshot option only if payment isn't approved in 20 seconds."""
-    time.sleep(20)
-    # Check if the temporary payment record still exists
-    record = temp_pay_col.find_one({"user_id": user_id, "amount": str(unique_amt)})
-    
-    if record:
-        markup = InlineKeyboardMarkup()
-        btn = InlineKeyboardButton("📸 Send Screenshot to Admin", url=f"tg://user?id={ADMIN_ID}")
-        markup.add(btn)
-        
-        msg = (
-            "❓ **Auto-Approval Pending...**\n\n"
-            f"Bhai, ₹{unique_amt} ka payment system mein abhi tak nahi dikha.\n"
-            "Agar aapne paise bhej diye hain, toh niche diye button se Admin ko Screenshot bhejein."
-        )
-        try:
-            bot.send_message(chat_id, msg, reply_markup=markup)
-        except Exception as e:
-            logger.error(f"Timer Message Error: {e}")
-
-# --- WEBHOOKS ---
-
-@app.route('/')
-def index():
-    return {"status": "running", "bot": "DV Prime"}, 200
-
-@app.route(f"/{BOT_TOKEN}", methods=['POST'])
-def telegram_webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return "OK", 200
-    return "Unauthorized", 403
-
-@app.route('/sms_webhook', methods=['GET', 'POST'])
-def handle_sms():
-    """Handles incoming SMS for auto-payment verification."""
+@app.route('/sms_webhook', methods=['POST', 'GET'])
+def sms_verification():
+    """The Heart of Auto-Approval: Processes SMS for matching payments."""
     data = request.args if request.method == 'GET' else request.json
-    sms_text = data.get('message', '').lower() if data else ""
+    msg = data.get('message', '').lower() if data else ""
+
+    if not msg: return "No Content", 200
+
+    # Log SMS for Admin (Useful for debugging rejection issues)
+    bot.send_message(ADMIN_ID, f"📩 **Incoming SMS Log:**\n`{msg}`")
+
+    # Regex to find amount like 29.89 or 29.41
+    match = re.search(r'(\d+\.\d{2})', msg)
+    if match:
+        amount_received = str(match.group(1))
+        # Find who was supposed to pay this exact unique amount
+        record = temp_pay_col.find_one({"amount": amount_received})
+
+        if record:
+            uid = record['user_id']
+            fid = record.get('fid')
+            duration = int(record['mins'])
+
+            # 1. Update Subscription in DB
+            new_expiry = int((datetime.now() + timedelta(minutes=duration)).timestamp())
+            users_col.update_one({"user_id": uid}, {"$set": {"expiry": new_expiry}}, upsert=True)
+            
+            # 2. DELETE temp record to prevent duplicate use & stop timer
+            temp_pay_col.delete_one({"_id": record['_id']})
+
+            # 3. Notify User & Admin
+            bot.send_message(uid, "✅ **Payment Verified Successfully!**\nYour Prime access is now active.")
+            
+            # Instant File Delivery if FID exists
+            if fid:
+                file_data = links_col.find_one({"file_id": fid})
+                if file_data:
+                    bot.send_message(uid, f"🎁 **Your Requested File:**\n{file_data['url']}")
+
+            bot.send_message(ADMIN_ID, f"💰 **Auto-Approved:** ₹{amount_received} from User `{uid}`")
+            return "MATCHED", 200
+
+    return "NO_MATCH", 200
+
+# ==========================================
+# ⏱️ TIMER THREAD (Screenshot Trigger)
+# ==========================================
+
+def payment_monitor(chat_id, user_id, amount):
+    """Wait and check if auto-approval happened. If not, ask for screenshot."""
+    time.sleep(25) # Giving extra 5 seconds for SMS lag
     
-    if not sms_text:
-        return "No Message", 200
-
-    logger.info(f"Incoming SMS: {sms_text}")
-    bot.send_message(ADMIN_ID, f"📩 **New SMS Received:**\n`{sms_text}`")
-
-    # Accurate regex for amount matching
-    match = re.search(r'(\d+\.\d{2})', sms_text)
-    if not match:
-        return "No Amount Found", 200
-
-    paid_amt = str(match.group(1))
-    payment = temp_pay_col.find_one({"amount": paid_amt})
-
-    if payment:
-        user_id = payment['user_id']
-        mins = int(payment['mins'])
-        fid = payment.get('fid')
-
-        # Activate Prime
-        expiry = get_expiry_date(mins)
-        users_col.update_one({"user_id": user_id}, {"$set": {"expiry": expiry}}, upsert=True)
-        
-        # Cleanup temp record to stop timer
-        temp_pay_col.delete_one({"_id": payment['_id']})
-
-        # Notify User
-        success_msg = (
-            "🎉 **Payment Successful!**\n\n"
-            "Aapka Prime account activate ho gaya hai.\n"
-            f"📅 **Expiry:** `{format_timestamp(expiry)}`"
-        )
-        bot.send_message(user_id, success_msg)
-
-        # Immediate File Delivery
-        if fid:
-            link_data = links_col.find_one({"file_id": fid})
-            if link_data:
-                bot.send_message(user_id, f"🎁 **Aapka Requested Link:**\n{link_data['url']}")
-
-        bot.send_message(ADMIN_ID, f"✅ **Auto-Approved:** User `{user_id}` paid ₹{paid_amt}")
-        return "SUCCESS", 200
-
-    return "Payment Record Not Found", 200
-
-# --- BOT HANDLERS ---
-
-@bot.message_handler(commands=['start'])
-def handle_start(message):
-    uid = message.from_user.id
-    args = message.text.split()
+    # Re-check database for the record
+    still_pending = temp_pay_col.find_one({"user_id": user_id, "amount": str(amount)})
     
-    # 1. Force Join Check
-    not_joined = check_fsub(uid)
-    if not_joined:
+    if still_pending:
+        # If record still exists, it means SMS wasn't received/matched
         markup = InlineKeyboardMarkup()
-        for ch in not_joined:
-            markup.add(InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{ch}"))
+        markup.add(InlineKeyboardButton("📸 Send Screenshot", url=f"tg://user?id={ADMIN_ID}"))
         
-        return bot.send_message(
-            message.chat.id, 
-            "🚫 **Access Denied!**\n\nSaare channels join karke phir se /start dabayein.",
+        bot.send_message(
+            chat_id, 
+            f"❓ **Payment Not Detected (₹{amount})**\n\nAgar aapne paise bhej diye hain toh Admin ko screenshot bhej kar manual approval lein.",
             reply_markup=markup
         )
 
-    # 2. Process File ID if exists
-    if len(args) > 1 and args[1].startswith('vid_'):
-        fid = args[1].replace('vid_', '')
-        link_data = links_col.find_one({"file_id": fid})
-        
-        if link_data:
-            user = users_col.find_one({"user_id": uid})
-            if user and user.get('expiry', 0) > datetime.now().timestamp():
-                bot.send_message(uid, f"✅ **Link Access Granted:**\n{link_data['url']}")
-            else:
-                markup = InlineKeyboardMarkup()
-                for mins, data in PLANS.items():
-                    markup.add(InlineKeyboardButton(f"💳 {data['label']} - ₹{data['price']}", callback_data=f"pay_{fid}_{mins}_{data['price']}"))
-                bot.send_message(uid, "🔒 **Prime Required!**\n\nIs link ko dekhne ke liye subscription lein:", reply_markup=markup)
-            return
+# ==========================================
+# 🤖 BOT HANDLERS
+# ==========================================
 
-    # 3. Standard Welcome
-    welcome_txt = "👋 **Welcome to DV Prime Bot!**\n\nStatus: "
-    user = users_col.find_one({"user_id": uid})
-    if user and user.get('expiry', 0) > datetime.now().timestamp():
-        welcome_txt += f"✅ **Active** until {format_timestamp(user['expiry'])}"
-    else:
-        welcome_txt += "❌ **No Active Plan**"
+@bot.message_handler(commands=['start'])
+def welcome(message):
+    uid = message.from_user.id
+    text = message.text
     
-    if uid == ADMIN_ID:
-        welcome_txt += "\n\n👑 **Admin Commands:**\n/short - Create Link\n/stats - User Stats\n/broadcast - Send Global MSG\n/approve ID Days\n/deactivate ID"
-        
-    bot.send_message(uid, welcome_txt)
+    # Force Sub Check
+    left = get_fsub_status(uid)
+    if left:
+        markup = InlineKeyboardMarkup()
+        for c in left: markup.add(InlineKeyboardButton(f"📢 Join {c}", url=f"https://t.me/{c}"))
+        markup.add(InlineKeyboardButton("✅ Check Again", callback_data="check_fsub"))
+        return bot.send_message(uid, "🚫 **Pehle channels join karo!**", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('pay_'))
-def process_payment_step(call):
-    _, fid, mins, base_price = call.data.split('_')
+    # Process File Link
+    match = re.search(r'vid_([a-zA-Z0-9]+)', text)
+    if match:
+        fid = match.group(1)
+        active, exp = is_prime(uid)
+        
+        if active:
+            link = links_col.find_one({"file_id": fid})
+            if link: return bot.send_message(uid, f"✅ **Link:** {link['url']}")
+        else:
+            # Show Payment Plans
+            markup = InlineKeyboardMarkup()
+            for m, p in PLANS.items():
+                markup.add(InlineKeyboardButton(f"💳 {p['name']} - ₹{p['price']}", callback_data=f"buy_{fid}_{m}_{p['price']}"))
+            return bot.send_message(uid, "🔒 **Prime Required!**\n\nIs link ko dekhne ke liye subscription lein:", reply_markup=markup)
+
+    bot.send_message(uid, "👋 Welcome to DV Prime Bot!")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
+def pay_request(call):
+    _, fid, mins, base = call.data.split('_')
     
-    # Generate unique decimal to track payment (e.g., 29.45)
-    unique_amt = f"{base_price}.{random.randint(10, 99)}"
+    # Generate unique amount (e.g., 29.45) to identify the user
+    unique_val = f"{base}.{random.randint(10, 99)}"
     
     temp_pay_col.update_one(
         {"user_id": call.from_user.id},
-        {"$set": {"amount": unique_amt, "mins": mins, "fid": fid, "timestamp": datetime.now()}},
+        {"$set": {"amount": str(unique_val), "mins": mins, "fid": fid, "at": datetime.now()}},
         upsert=True
     )
 
-    upi_link = f"upi://pay?pa={UPI_ID}&am={unique_amt}&cu=INR&tn=Prime_Sub"
-    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={urllib.parse.quote(upi_link)}&margin=10"
+    pay_url = f"upi://pay?pa={UPI_ID}&am={unique_val}&cu=INR&tn=DV_Prime"
+    qr = f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={urllib.parse.quote(pay_url)}"
 
-    caption = (
-        f"💳 **Payment Invoice**\n\n"
-        f"💵 Amount: `₹{unique_amt}`\n"
-        f"⏳ Time Limit: 15 Minutes\n\n"
-        "⚠️ **IMPORTANT:** Pura amount bhejyein (Paise ke saath) varna auto-approval nahi hoga.\n\n"
-        "Payment ke baad 15-20 seconds wait karein."
+    bot.send_photo(
+        call.message.chat.id, 
+        qr, 
+        caption=f"⚠️ Pay exactly **₹{unique_val}**\n\n15-20 second wait karein activation ke liye."
     )
     
-    bot.send_photo(call.message.chat.id, qr_url, caption=caption, parse_mode="Markdown")
-    
-    # Start the monitoring thread
-    threading.Thread(target=monitor_payment, args=(call.message.chat.id, call.from_user.id, unique_amt)).start()
+    # Start Monitoring Thread
+    threading.Thread(target=payment_monitor, args=(call.message.chat.id, call.from_user.id, unique_val)).start()
 
-# --- ADMIN FUNCTIONS ---
-
-@bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
-def admin_short(message):
-    msg = bot.send_message(ADMIN_ID, "🔗 Please send the URL you want to shorten:")
-    bot.register_next_step_handler(msg, save_short_link)
-
-def save_short_link(message):
-    if not message.text or not message.text.startswith('http'):
-        return bot.send_message(ADMIN_ID, "❌ Invalid URL. Try again.")
-    
-    fid = str(uuid.uuid4())[:8]
-    links_col.insert_one({"file_id": fid, "url": message.text, "created_at": datetime.now()})
-    
-    bot_link = f"https://t.me/{bot.get_me().username}?start=vid_{fid}"
-    bot.send_message(ADMIN_ID, f"✅ **Link Created!**\n\n`{bot_link}`")
-
-@bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
-def admin_stats(message):
-    total = users_col.count_documents({})
-    active = users_col.count_documents({"expiry": {"$gt": datetime.now().timestamp()}})
-    bot.send_message(ADMIN_ID, f"📊 **Bot Statistics**\n\nTotal Database Users: `{total}`\nActive Prime Users: `{active}`")
+# ==========================================
+# 👑 ADMIN COMMANDS (With Safety Checks)
+# ==========================================
 
 @bot.message_handler(commands=['approve'], func=lambda m: m.from_user.id == ADMIN_ID)
-def admin_approve(message):
+def manual_ok(message):
     try:
-        _, target_id, days = message.text.split()
-        expiry = get_expiry_date(int(days) * 1440)
-        users_col.update_one({"user_id": int(target_id)}, {"$set": {"expiry": expiry}}, upsert=True)
-        bot.send_message(target_id, "✅ **Prime Activated by Admin!**")
-        bot.send_message(ADMIN_ID, f"✅ User `{target_id}` approved for {days} days.")
+        # Format: /approve 123456 30 (ID then Days)
+        cmd = message.text.split()
+        target, days = int(cmd[1]), int(cmd[2])
+        exp = int((datetime.now() + timedelta(days=days)).timestamp())
+        
+        users_col.update_one({"user_id": target}, {"$set": {"expiry": exp}}, upsert=True)
+        bot.send_message(target, "🎉 **Prime Activated by Admin!**")
+        bot.send_message(ADMIN_ID, f"✅ User `{target}` approved for {days} days.")
     except:
         bot.send_message(ADMIN_ID, "❌ Format: `/approve ID Days`")
 
-@bot.message_handler(commands=['deactivate'], func=lambda m: m.from_user.id == ADMIN_ID)
-def admin_deactivate(message):
-    try:
-        target_id = int(message.text.split()[1])
-        users_col.delete_one({"user_id": target_id})
-        bot.send_message(ADMIN_ID, f"🚫 User `{target_id}` prime deactivated.")
-    except:
-        bot.send_message(ADMIN_ID, "❌ Format: `/deactivate ID`")
+@bot.message_handler(commands=['short'], func=lambda m: m.from_user.id == ADMIN_ID)
+def make_link(message):
+    msg = bot.send_message(ADMIN_ID, "🔗 Link bhejein:")
+    bot.register_next_step_handler(msg, finalize_short)
 
-@bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
-def admin_broadcast(message):
-    msg = bot.send_message(ADMIN_ID, "📢 Send the message for broadcast:")
-    bot.register_next_step_handler(msg, run_broadcast)
+def finalize_short(message):
+    fid = str(uuid.uuid4())[:8]
+    links_col.insert_one({"file_id": fid, "url": message.text})
+    bot.send_message(ADMIN_ID, f"✅ Bot Link: `https://t.me/{bot.get_me().username}?start=vid_{fid}`")
 
-def run_broadcast(message):
-    users = users_col.find({})
-    count = 0
-    for user in users:
-        try:
-            bot.send_message(user['user_id'], message.text)
-            count += 1
-            time.sleep(0.05) # Prevent flood
-        except: continue
-    bot.send_message(ADMIN_ID, f"📢 Broadcast finished. Sent to `{count}` users.")
+# ==========================================
+# 🚀 FLASK & WEBHOOK STARTUP
+# ==========================================
 
-# --- EXECUTION ---
+@app.route(f"/{BOT_TOKEN}", methods=['POST'])
+def tg_in():
+    bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
+    return "OK", 200
 
 if __name__ == '__main__':
-    # Webhook setup
     bot.remove_webhook()
-    time.sleep(1)
+    time.sleep(2)
     bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
-    logger.info(f"Bot Webhook set to {WEBHOOK_URL}")
-    
-    # Run Flask
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
     
