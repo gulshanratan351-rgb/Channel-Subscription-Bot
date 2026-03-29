@@ -142,40 +142,18 @@ def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
     bot.send_message(ADMIN_ID, f"✅ Link: https://t.me/{bot.get_me().username}?start=vid_{fid}")
-# --- QR & AUTO-FILL (Updated with Timer) ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
-def handle_pay(call):
-    _, fid, mins, base_price = call.data.split('_')
-    unique_price = f"{base_price}.{random.randint(10, 99)}"
-    
-    # Database mein temporary entry save karna
-    temp_pay_col.update_one(
-        {"user_id": call.from_user.id}, 
-        {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, 
-        upsert=True
-    )
-    
-    upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
-    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
-    
-    # User ko QR bhejna
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**\n\n✅ Payment ke baad 20 second wait karein, system auto-approve kar dega.")
-    
-    # --- YAHAN TIMER START HOGA ---
-    # Ye background mein 2 minute wait karega aur phir check karega
-    threading.Thread(target=check_payment_status, args=(call.from_user.id, str(unique_price))).start()
-    def check_payment_status(chat_id, amount):
+# --- QR & AUTO-FILL (Yahan se Replace Karein) ---
+
+def check_payment_status(chat_id, amount):
     import time
-    time.sleep(120)  # 2 minute (120 seconds) ka intezaar
+    time.sleep(120)  # 2 minute wait karega
     
-    # Check karna ki kya approval ho chuka hai? 
-    # (Agar approval ho gaya hoga, toh handle_sms ne record delete kar diya hoga)
+    # Check karein ki kya record abhi bhi database mein hai?
+    # Agar record hai, matlab handle_sms ne ise delete nahi kiya (approval nahi hui)
     pending = temp_pay_col.find_one({"user_id": chat_id, "amount": amount})
     
     if pending:
-        # Agar record abhi bhi database mein hai, matlab auto-approve NAHI hua
         markup = InlineKeyboardMarkup()
-        # Admin ki profile ka link taaki user screenshot bhej sake
         markup.add(InlineKeyboardButton("📸 Send Screenshot to Admin", url=f"tg://user?id={ADMIN_ID}"))
         
         error_msg = (
@@ -188,7 +166,26 @@ def handle_pay(call):
             "Agar aapne pay kar diya hai, toh niche button se Admin ko screenshot bhej do."
         )
         bot.send_message(chat_id, error_msg, reply_markup=markup)
-        
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
+def handle_pay(call):
+    _, fid, mins, base_price = call.data.split('_')
+    unique_price = f"{base_price}.{random.randint(10, 99)}"
+    
+    # Database mein temporary entry
+    temp_pay_col.update_one(
+        {"user_id": call.from_user.id}, 
+        {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, 
+        upsert=True
+    )
+    
+    upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
+    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
+    
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**\n\n✅ Payment ke baad 20 second wait karein, system auto-approve kar dega.")
+    
+    # Timer shuru karo jo background mein check karega (Thread use kiya hai taaki bot ruke nahi)
+    threading.Thread(target=check_payment_status, args=(call.from_user.id, str(unique_price))).start()
 
 if __name__ == '__main__':
     bot.remove_webhook()
