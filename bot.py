@@ -164,7 +164,31 @@ def handle_pay(call):
     # --- YAHAN TIMER START HOGA ---
     # Ye background mein 2 minute wait karega aur phir check karega
     threading.Thread(target=check_payment_status, args=(call.from_user.id, str(unique_price))).start()
+    def check_payment_status(chat_id, amount):
+    import time
+    time.sleep(120)  # 2 minute (120 seconds) ka intezaar
     
+    # Check karna ki kya approval ho chuka hai? 
+    # (Agar approval ho gaya hoga, toh handle_sms ne record delete kar diya hoga)
+    pending = temp_pay_col.find_one({"user_id": chat_id, "amount": amount})
+    
+    if pending:
+        # Agar record abhi bhi database mein hai, matlab auto-approve NAHI hua
+        markup = InlineKeyboardMarkup()
+        # Admin ki profile ka link taaki user screenshot bhej sake
+        markup.add(InlineKeyboardButton("📸 Send Screenshot to Admin", url=f"tg://user?id={ADMIN_ID}"))
+        
+        error_msg = (
+            "❌ **Auto-Approval Update**\n\n"
+            f"Bhai, ₹{amount} ka payment system mein detect nahi hua.\n\n"
+            "**Possible Reasons:**\n"
+            "1. SMS delay hona.\n"
+            "2. Galat amount pay karna.\n"
+            "3. Network issue.\n\n"
+            "Agar aapne pay kar diya hai, toh niche button se Admin ko screenshot bhej do."
+        )
+        bot.send_message(chat_id, error_msg, reply_markup=markup)
+        
 
 if __name__ == '__main__':
     bot.remove_webhook()
