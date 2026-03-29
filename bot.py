@@ -142,18 +142,29 @@ def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
     bot.send_message(ADMIN_ID, f"✅ Link: https://t.me/{bot.get_me().username}?start=vid_{fid}")
-
-# --- QR & AUTO-FILL ---
+# --- QR & AUTO-FILL (Updated with Timer) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def handle_pay(call):
     _, fid, mins, base_price = call.data.split('_')
     unique_price = f"{base_price}.{random.randint(10, 99)}"
-    # fid yahan save ho raha hai
-    # 'unique_price' ke aage str() laga do
-    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, upsert=True)
+    
+    # Database mein temporary entry save karna
+    temp_pay_col.update_one(
+        {"user_id": call.from_user.id}, 
+        {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, 
+        upsert=True
+    )
+    
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
+    
+    # User ko QR bhejna
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**\n\n✅ Payment ke baad 20 second wait karein, system auto-approve kar dega.")
+    
+    # --- YAHAN TIMER START HOGA ---
+    # Ye background mein 2 minute wait karega aur phir check karega
+    threading.Thread(target=check_payment_status, args=(call.from_user.id, str(unique_price))).start()
+    
 
 if __name__ == '__main__':
     bot.remove_webhook()
