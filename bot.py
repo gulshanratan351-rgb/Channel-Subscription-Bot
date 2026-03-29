@@ -35,26 +35,41 @@ def telegram_webhook():
     return "Forbidden", 403
 
 # --- AUTO-APPROVAL FIX (With Link Delivery) ---
-                     # ... (Expiry update ke baad) ...
+@app.route('/sms_webhook', methods=['GET', 'POST'])
+def handle_sms():
+    try:
+        sms_text = request.args.get('message', '').lower()
+        if not sms_text and request.is_json:
+            sms_text = request.json.get('message', '').lower()
+        
+        if sms_text:
+            bot.send_message(ADMIN_ID, f"📩 **SMS Log:**\n`{sms_text}`")
+            amount_match = re.search(r'(\d+\.\d{2})', sms_text)
+            if amount_match:
+                amt = str(amount_match.group(1)) 
+                pay_record = temp_pay_col.find_one({"amount": amt})
+                if pay_record:
+                    uid = pay_record['user_id']
+                    mins = int(pay_record['mins'])
+                    fid = pay_record.get('fid') # File ID retrieve ki
                     
-                    # 1. Payment Success Message
+                    exp = int((datetime.now() + timedelta(minutes=mins)).timestamp())
+                    users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
+                    temp_pay_col.delete_one({"_id": pay_record['_id']})
+                    
+                    # User ko Confirmation aur Link bhejna
                     bot.send_message(uid, "✅ **Payment Verified!** Prime Active.")
                     
                     if fid:
-                        # Database se link dhoondna
-                        link_obj = links_col.find_one({"file_id": str(fid)}) # str() lagana zaroori hai
-                        
+                        link_obj = links_col.find_one({"file_id": fid})
                         if link_obj:
-                            # Agar link mil gaya
-                            bot.send_message(uid, f"🎁 **Aapka Requested Link Ye Raha:**\n{link_obj['url']}")
-                        else:
-                            # Agar database mein link nahi mila (Error handling)
-                            bot.send_message(uid, "⚠️ **System Update:** Aapka Prime active ho gaya hai, par link fetch nahi ho paya. Please /start karke dobara check karein.")
-                            bot.send_message(ADMIN_ID, f"❌ **Error:** User {uid} paid for FID `{fid}` but link not found in database!")
+                            bot.send_message(uid, f"🎁 **Aapka Link Ye Raha:**\n{link_obj['url']}")
                     
                     bot.send_message(ADMIN_ID, f"💰 **Approved:** User `{uid}` paid ₹{amt}")
                     return "SUCCESS", 200
-
+        return "NO MATCH", 200
+    except: return "ERROR", 500
+                
 # --- START HANDLER ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
@@ -127,50 +142,18 @@ def process_short(message):
     fid = str(uuid.uuid4())[:8]
     links_col.insert_one({"file_id": fid, "url": message.text})
     bot.send_message(ADMIN_ID, f"✅ Link: https://t.me/{bot.get_me().username}?start=vid_{fid}")
-# --- QR & AUTO-FILL (Yahan se Replace Karein) ---
 
-def check_payment_status(chat_id, amount):
-    import time
-    time.sleep(120)  # 2 minute wait karega
-    
-    # Check karein ki kya record abhi bhi database mein hai?
-    # Agar record hai, matlab handle_sms ne ise delete nahi kiya (approval nahi hui)
-    pending = temp_pay_col.find_one({"user_id": chat_id, "amount": amount})
-    
-    if pending:
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("📸 Send Screenshot to Admin", url=f"tg://user?id={ADMIN_ID}"))
-        
-        error_msg = (
-            "❌ **Auto-Approval Update**\n\n"
-            f"Bhai, ₹{amount} ka payment system mein detect nahi hua.\n\n"
-            "**Possible Reasons:**\n"
-            "1. SMS delay hona.\n"
-            "2. Galat amount pay karna.\n"
-            "3. Network issue.\n\n"
-            "Agar aapne pay kar diya hai, toh niche button se Admin ko screenshot bhej do."
-        )
-        bot.send_message(chat_id, error_msg, reply_markup=markup)
-
+# --- QR & AUTO-FILL ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def handle_pay(call):
     _, fid, mins, base_price = call.data.split('_')
     unique_price = f"{base_price}.{random.randint(10, 99)}"
-    
-    # Database mein temporary entry
-    temp_pay_col.update_one(
-        {"user_id": call.from_user.id}, 
-        {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, 
-        upsert=True
-    )
-    
+    # fid yahan save ho raha hai
+    # 'unique_price' ke aage str() laga do
+    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, upsert=True)
     upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
     qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
-    
-    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**\n\n✅ Payment ke baad 20 second wait karein, system auto-approve kar dega.")
-    
-    # Timer shuru karo jo background mein check karega (Thread use kiya hai taaki bot ruke nahi)
-    threading.Thread(target=check_payment_status, args=(call.from_user.id, str(unique_price))).start()
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
 
 if __name__ == '__main__':
     bot.remove_webhook()
