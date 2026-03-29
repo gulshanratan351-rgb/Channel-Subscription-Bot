@@ -35,41 +35,26 @@ def telegram_webhook():
     return "Forbidden", 403
 
 # --- AUTO-APPROVAL FIX (With Link Delivery) ---
-@app.route('/sms_webhook', methods=['GET', 'POST'])
-def handle_sms():
-    try:
-        sms_text = request.args.get('message', '').lower()
-        if not sms_text and request.is_json:
-            sms_text = request.json.get('message', '').lower()
-        
-        if sms_text:
-            bot.send_message(ADMIN_ID, f"📩 **SMS Log:**\n`{sms_text}`")
-            amount_match = re.search(r'(\d+\.\d{2})', sms_text)
-            if amount_match:
-                amt = str(amount_match.group(1)) 
-                pay_record = temp_pay_col.find_one({"amount": amt})
-                if pay_record:
-                    uid = pay_record['user_id']
-                    mins = int(pay_record['mins'])
-                    fid = pay_record.get('fid') # File ID retrieve ki
+                     # ... (Expiry update ke baad) ...
                     
-                    exp = int((datetime.now() + timedelta(minutes=mins)).timestamp())
-                    users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
-                    temp_pay_col.delete_one({"_id": pay_record['_id']})
-                    
-                    # User ko Confirmation aur Link bhejna
+                    # 1. Payment Success Message
                     bot.send_message(uid, "✅ **Payment Verified!** Prime Active.")
                     
                     if fid:
-                        link_obj = links_col.find_one({"file_id": fid})
+                        # Database se link dhoondna
+                        link_obj = links_col.find_one({"file_id": str(fid)}) # str() lagana zaroori hai
+                        
                         if link_obj:
-                            bot.send_message(uid, f"🎁 **Aapka Link Ye Raha:**\n{link_obj['url']}")
+                            # Agar link mil gaya
+                            bot.send_message(uid, f"🎁 **Aapka Requested Link Ye Raha:**\n{link_obj['url']}")
+                        else:
+                            # Agar database mein link nahi mila (Error handling)
+                            bot.send_message(uid, "⚠️ **System Update:** Aapka Prime active ho gaya hai, par link fetch nahi ho paya. Please /start karke dobara check karein.")
+                            bot.send_message(ADMIN_ID, f"❌ **Error:** User {uid} paid for FID `{fid}` but link not found in database!")
                     
                     bot.send_message(ADMIN_ID, f"💰 **Approved:** User `{uid}` paid ₹{amt}")
                     return "SUCCESS", 200
-        return "NO MATCH", 200
-    except: return "ERROR", 500
-                
+
 # --- START HANDLER ---
 @bot.message_handler(commands=['start'])
 def start_handler(message):
