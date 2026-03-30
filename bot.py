@@ -45,13 +45,14 @@ def handle_sms():
         if sms_text:
             bot.send_message(ADMIN_ID, f"📩 **SMS Log:**\n`{sms_text}`")
             amount_match = re.search(r'(\d+\.\d{2})', sms_text)
-            if amount_match:
-                amt = str(amount_match.group(1)) 
-                pay_record = temp_pay_col.find_one({"amount": amt})
-                if pay_record:
-                    uid = pay_record['user_id']
-                    mins = int(pay_record['mins'])
-                    fid = pay_record.get('fid') # File ID retrieve ki
+            # Purane re.search ko isse badal dein
+amount_match = re.search(r'(?:rs\.?|inr|amt)\s*([\d,]+\.\d{2})|([\d,]+\.\d{2})\s*(?:paid|received|deposited)', sms_text)
+
+if amount_match:
+    # Ye decimal amount ko filter karke nikal lega
+    amt = amount_match.group(1) or amount_match.group(2)
+    amt = str(amt).replace(',', '') # Comma hatane ke liye
+    
                     
                     exp = int((datetime.now() + timedelta(minutes=mins)).timestamp())
                     users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
