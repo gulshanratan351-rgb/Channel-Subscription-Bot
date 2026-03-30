@@ -44,7 +44,7 @@ def handle_sms():
         
         if sms_text:
             bot.send_message(ADMIN_ID, f"📩 **SMS Log:**\n`{sms_text}`")
-            amount_match = re.search(r'(\d+\.\d{2})', sms_text)
+            amount_match = re.search(r'(\d+(\.\d{1,2})?)', sms_text)
             if amount_match:
                 amt = str(amount_match.group(1)) 
                 pay_record = temp_pay_col.find_one({"amount": amt})
