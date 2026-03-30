@@ -1,4 +1,4 @@
-import os, telebot, urllib.parse, uuid, datetime, re, threading, random, time
+import os, telebot, urllib.parse, uuid, datetime, re, threading, random
 from telebot import types
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
@@ -44,45 +44,31 @@ def handle_sms():
         
         if sms_text:
             bot.send_message(ADMIN_ID, f"📩 **SMS Log:**\n`{sms_text}`")
-            
-            # --- Naya Solid Regex Implementation ---
-            amount_match = re.search(r'(?:rs\.?|inr|amt)\s*([\d,]+\.\d{2})|([\d,]+\.\d{2})\s*(?:paid|received|deposited)', sms_text)
-
+            amount_match = re.search(r'(\d+\.\d{2})', sms_text)
             if amount_match:
-                # Decimal amount filter karke nikal lega
-                amt = amount_match.group(1) or amount_match.group(2)
-                amt = str(amt).replace(',', '') # Comma hatane ke liye
-                
-                # Database mein check karna ki ye amount kis user ka hai
+                amt = str(amount_match.group(1)) 
                 pay_record = temp_pay_col.find_one({"amount": amt})
-                
                 if pay_record:
                     uid = pay_record['user_id']
                     mins = int(pay_record['mins'])
-                    fid = pay_record.get('fid')
+                    fid = pay_record.get('fid') # File ID retrieve ki
                     
-                    # Expiry update karna
                     exp = int((datetime.now() + timedelta(minutes=mins)).timestamp())
                     users_col.update_one({"user_id": uid}, {"$set": {"expiry": exp}}, upsert=True)
-                    
-                    # Temp record delete karna
                     temp_pay_col.delete_one({"_id": pay_record['_id']})
                     
                     # User ko Confirmation aur Link bhejna
-                    bot.send_message(uid, "✅ **Payment Verified!** Aapka Prime account active ho gaya hai.")
+                    bot.send_message(uid, "✅ **Payment Verified!** Prime Active.")
                     
                     if fid:
                         link_obj = links_col.find_one({"file_id": fid})
                         if link_obj:
-                            bot.send_message(uid, f"🎁 **Aapka Requested Link Ye Raha:**\n{link_obj['url']}")
+                            bot.send_message(uid, f"🎁 **Aapka Link Ye Raha:**\n{link_obj['url']}")
                     
-                    bot.send_message(ADMIN_ID, f"💰 **Auto-Approved:** User `{uid}` paid ₹{amt}")
+                    bot.send_message(ADMIN_ID, f"💰 **Approved:** User `{uid}` paid ₹{amt}")
                     return "SUCCESS", 200
-                    
         return "NO MATCH", 200
-    except Exception as e: 
-        bot.send_message(ADMIN_ID, f"❌ Webhook Error: {str(e)}")
-        return "ERROR", 500
+    except: return "ERROR", 500
                 
 # --- START HANDLER ---
 @bot.message_handler(commands=['start'])
@@ -90,9 +76,7 @@ def start_handler(message):
     uid = message.from_user.id
     text = message.text
     if uid != ADMIN_ID:
-        try: bot.send_message(ADMIN_ID, f"👤 **New User Alert!**\nID: `{uid}`")
-        except: pass
-
+        bot.send_message(ADMIN_ID, f"👤 **New User Alert!**\nID: `{uid}`")
     match = re.search(r'vid_([a-zA-Z0-9]+)', text)
     if match:
         fid = match.group(1)
@@ -100,19 +84,17 @@ def start_handler(message):
         if link_obj:
             u_data = users_col.find_one({"user_id": uid})
             if u_data and u_data.get('expiry', 0) > datetime.now().timestamp():
-                bot.send_message(uid, f"✅ **Link Access Granted:**\n{link_obj['url']}")
+                bot.send_message(uid, f"✅ **Link:** {link_obj['url']}")
             else:
                 markup = InlineKeyboardMarkup()
                 for mins, price in PLANS.items():
                     label = f"{int(mins)//1440} Day" if int(mins) >= 1440 else f"{mins} Min"
                     markup.add(InlineKeyboardButton(f"💳 {label} - ₹{price}", callback_data=f"p_{fid}_{mins}_{price}"))
-                bot.send_message(uid, "🔒 **Prime Required!**\n\nIs file ko dekhne ke liye subscription lein:", reply_markup=markup)
+                bot.send_message(uid, "🔒 **Prime Required!**", reply_markup=markup)
             return
-            
     if uid == ADMIN_ID:
         bot.send_message(uid, "👑 **ADMIN PANEL**\n/short - Create Link\n/stats - Check Users\n/broadcast - Message All\n/approve ID Days\n/deactivate ID")
-    else: 
-        bot.send_message(uid, "👋 Welcome! Buy Prime to access all links.")
+    else: bot.send_message(uid, "👋 Welcome!")
 
 # --- ADMIN COMMANDS ---
 @bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
@@ -126,7 +108,6 @@ def manual_approve(message):
         _, tid, days = message.text.split()
         exp = int((datetime.now() + timedelta(days=int(days))).timestamp())
         users_col.update_one({"user_id": int(tid)}, {"$set": {"expiry": exp}}, upsert=True)
-        bot.send_message(tid, "✅ **Prime Activated!** Admin ne aapka account approve kar diya hai.")
         bot.send_message(ADMIN_ID, f"✅ User {tid} approved for {days} days.")
     except: bot.send_message(ADMIN_ID, "❌ Use: `/approve ID Days`")
 
@@ -137,7 +118,6 @@ def deactivate_cmd(message):
         users_col.delete_one({"user_id": tid})
         bot.send_message(ADMIN_ID, f"🚫 User {tid} deactivated.")
     except: bot.send_message(ADMIN_ID, "❌ Use: `/deactivate ID`")
-
 @bot.message_handler(commands=['stats'], func=lambda m: m.from_user.id == ADMIN_ID)
 def stats_cmd(message):
     try:
@@ -145,10 +125,9 @@ def stats_cmd(message):
         now = datetime.now().timestamp()
         active_users = list(users_col.find({"expiry": {"$gt": now}}))
         
-        msg = f"📊 **Bot Stats:**\n\n👥 Total Database Users: `{total}`\n⚡ Active Prime Users: `{len(active_users)}`"
+        msg = f"📊 **Bot Stats:**\n\n👥 Total: `{total}`\n⚡ Active: `{len(active_users)}`"
         if active_users:
-            msg += "\n\n🆔 **Active IDs:**\n" + "\n".join([f"`{u['user_id']}`" for u in active_users[:30]])
-            if len(active_users) > 30: msg += f"\n...and {len(active_users)-30} more."
+            msg += "\n\n🆔 **Active IDs:**\n" + "\n".join([f"`{u['user_id']}`" for u in active_users])
         
         bot.send_message(ADMIN_ID, msg)
     except Exception as e:
@@ -169,29 +148,16 @@ def process_short(message):
 def handle_pay(call):
     _, fid, mins, base_price = call.data.split('_')
     unique_price = f"{base_price}.{random.randint(10, 99)}"
-    
-    # Database mein transaction record save karna
-    temp_pay_col.update_one(
-        {"user_id": call.from_user.id}, 
-        {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, 
-        upsert=True
-    )
-    
-    upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR&tn=PrimeSub"
-    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={urllib.parse.quote(upi_url)}&margin=10"
-    
-    caption = (
-        f"💳 **Payment Invoice**\n\n"
-        f"💵 Amount: `₹{unique_price}`\n"
-        f"⏳ Time Limit: 15 Minutes\n\n"
-        f"⚠️ **IMPORTANT:** Pura amount bhejein (Paise ke saath) varna auto-approval nahi hoga.\n\n"
-        f"Payment ke baad 15-20 seconds wait karein."
-    )
-    bot.send_photo(call.message.chat.id, qr_api, caption=caption)
+    # fid yahan save ho raha hai
+    # 'unique_price' ke aage str() laga do
+    temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"amount": str(unique_price), "mins": mins, "fid": fid, "time": datetime.now()}}, upsert=True)
+    upi_url = f"upi://pay?pa={UPI_ID}&am={unique_price}&cu=INR"
+    qr_api = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
+    bot.send_photo(call.message.chat.id, qr_api, caption=f"⚠️ Pay exactly **₹{unique_price}**")
 
 if __name__ == '__main__':
     bot.remove_webhook()
-    time.sleep(2)
+    import time; time.sleep(2)
     bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
     
