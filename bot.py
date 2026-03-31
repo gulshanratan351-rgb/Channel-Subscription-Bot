@@ -14,7 +14,7 @@ WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://channel-subscription-bot-4nav.on
 
 bot = telebot.TeleBot(BOT_TOKEN)
 client = MongoClient(MONGO_URI)
-db = client['sub_management']
+db = client['sample_mflix']
 users_col = db['users']
 links_col = db['short_links']
 temp_pay_col = db['temp_payments']
