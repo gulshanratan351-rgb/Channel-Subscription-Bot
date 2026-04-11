@@ -140,6 +140,7 @@ def handle_start(message):
         else:
             # Show Payment Plans
             markup = InlineKeyboardMarkup()
+            markup.row(InlineKeyboardButton("💳 2 Days - ₹50", callback_data=f"pay_{fid}_2880_100"))
             markup.row(InlineKeyboardButton("💳 7 Days - ₹100", callback_data=f"pay_{fid}_10080_100"))
             markup.row(InlineKeyboardButton("💳 1 Month - ₹200", callback_data=f"pay_{fid}_43200_200"))
             markup.row(InlineKeyboardButton("💳 3 Months - ₹400", callback_data=f"pay_{fid}_129600_400"))
