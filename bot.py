@@ -21,6 +21,7 @@ temp_pay_col = db['temp_payments']
 
 # Plans Mapping
 PLANS = {
+    "2880":"50",     # 2 Days
     "10080": "100",  # 7 Days
     "43200": "200",  # 1 Month
     "129600": "400"  # 3 Months
