@@ -213,6 +213,19 @@ def handle_admin_decision(call):
         bot.send_message(uid, "❌ **Payment Rejected!**\nPlease send a valid screenshot or contact admin.")
         bot.edit_message_caption("❌ User Rejected!", ADMIN_ID, call.message.message_id)
 
+@app.on_message(filters.command("unapprove") & filters.user(ADMIN_IDS))
+async def deapprove_by_reply(client, message):
+    # Agar kisi message par reply kiya gaya hai
+    if message.reply_to_message:
+        user_id = message.reply_to_message.from_user.id
+        
+        # Database se remove karne ka logic yahan aayega
+        # db.remove_prime(user_id)
+        
+        await message.reply_text(f"✅ User `{user_id}` ko deapprove kar diya gaya hai.")
+    else:
+        await message.reply_text("Bhai, kisi user ke message par Reply karke ye command likho!")
+        
 # ================= RUNNER =================
 if __name__ == '__main__':
     bot.remove_webhook()
