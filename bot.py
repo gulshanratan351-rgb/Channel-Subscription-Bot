@@ -84,16 +84,28 @@ def manual_approve(message):
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error: {str(e)}")
 
-@bot.message_handler(commands=['deactivate'], func=lambda m: m.from_user.id == ADMIN_ID)
-def deactivate_user(message):
+# --- Nayi Unapprove Command (Added by Gemini) ---
+@bot.message_handler(commands=['unapprove', 'deactivate'], func=lambda m: m.from_user.id == ADMIN_ID)
+def deapprove_user(message):
     try:
-        args = message.text.split()
-        target_id = int(args[1])
-        users_col.update_one({"user_id": target_id}, {"$set": {"expiry": 0}})
-        bot.send_message(target_id, "❌ Your Prime membership has been revoked by Admin.")
-        bot.reply_to(message, f"✅ User {target_id} deactivated.")
-    except:
-        bot.reply_to(message, "❌ Use: `/deactivate [User_ID]`")
+        target_id = None
+        # 1. Check if reply
+        if message.reply_to_message:
+            target_id = message.reply_to_message.from_user.id
+        # 2. Check if ID provided in text
+        else:
+            args = message.text.split()
+            if len(args) > 1:
+                target_id = int(args[1])
+        
+        if target_id:
+            users_col.update_one({"user_id": target_id}, {"$set": {"expiry": 0}})
+            bot.send_message(target_id, "❌ Your Prime membership has been revoked by Admin.")
+            bot.reply_to(message, f"✅ User `{target_id}` ko Deapprove kar diya gaya hai.")
+        else:
+            bot.reply_to(message, "❌ User ID nahi mili. Ya toh message par Reply karein ya ID likhein: `/unapprove 12345`.")
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ Error: {str(e)}")
 
 @bot.message_handler(commands=['broadcast'], func=lambda m: m.from_user.id == ADMIN_ID)
 def broadcast_msg(message):
@@ -126,7 +138,6 @@ def save_link(message):
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     uid = message.from_user.id
-    # Ensure user exists in DB
     users_col.update_one({"user_id": uid}, {"$setOnInsert": {"joined": datetime.now()}}, upsert=True)
     
     match = re.search(r'vid_([a-zA-Z0-9]+)', message.text)
@@ -139,9 +150,6 @@ def handle_start(message):
             else:
                 bot.send_message(uid, "❌ Link expired or removed.")
         else:
-            # Show Payment Plans
-            # Is part ko copy-paste kar lein taaki galti na ho
-            # Is part ko copy-paste kar lein taaki galti na ho
             markup = InlineKeyboardMarkup()
             markup.row(InlineKeyboardButton("💳 2 Days - ₹50", callback_data=f"pay_{fid}_2880_50"))
             markup.row(InlineKeyboardButton("💳 7 Days - ₹100", callback_data=f"pay_{fid}_10080_100"))
@@ -150,7 +158,6 @@ def handle_start(message):
 
             bot.send_message(uid, "🔒 **Membership Required!**\n\nSelect a plan to unlock this content:", reply_markup=markup)
     else:
-        # Generic Start
         text = "👋 Welcome to the Movie Bot!\n\n"
         if is_prime(uid):
             u = users_col.find_one({"user_id": uid})
@@ -176,13 +183,12 @@ def show_qr(call):
 @bot.message_handler(content_types=['photo'])
 def process_screenshot(message):
     uid = message.from_user.id
-    if uid == ADMIN_ID: return # Ignore admin photos
+    if uid == ADMIN_ID: return 
     
     pending = temp_pay_col.find_one({"user_id": uid})
     if pending:
         bot.send_message(uid, "⏳ **Screenshot Received!**\nAdmin is verifying. You will be notified shortly.")
         
-        # Send to Admin
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("Approve ✅", callback_data=f"adm_ok_{uid}"),
                    InlineKeyboardButton("Reject ❌", callback_data=f"adm_no_{uid}"))
@@ -203,7 +209,6 @@ def handle_admin_decision(call):
             expiry = int((datetime.now() + timedelta(minutes=int(pay_data['mins']))).timestamp())
             users_col.update_one({"user_id": uid}, {"$set": {"expiry": expiry}}, upsert=True)
             
-            # Send link
             l_data = links_col.find_one({"file_id": pay_data['fid']})
             msg = f"✅ **Payment Approved!**\n\n🎁 Your Link: {l_data['url']}" if l_data else "✅ Payment Approved! Access granted."
             bot.send_message(uid, msg)
@@ -213,23 +218,10 @@ def handle_admin_decision(call):
         bot.send_message(uid, "❌ **Payment Rejected!**\nPlease send a valid screenshot or contact admin.")
         bot.edit_message_caption("❌ User Rejected!", ADMIN_ID, call.message.message_id)
 
-@app.on_message(filters.command("unapprove") & filters.user(ADMIN_IDS))
-async def deapprove_by_reply(client, message):
-    # Agar kisi message par reply kiya gaya hai
-    if message.reply_to_message:
-        user_id = message.reply_to_message.from_user.id
-        
-        # Database se remove karne ka logic yahan aayega
-        # db.remove_prime(user_id)
-        
-        await message.reply_text(f"✅ User `{user_id}` ko deapprove kar diya gaya hai.")
-    else:
-        await message.reply_text("Bhai, kisi user ke message par Reply karke ye command likho!")
-        
 # ================= RUNNER =================
 if __name__ == '__main__':
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
-    
+        
