@@ -171,13 +171,26 @@ def show_qr(call):
     _, fid, mins, price = call.data.split('_')
     temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"mins": mins, "fid": fid, "price": price}}, upsert=True)
     
-    upi_url = f"upi://pay?pa={UPI_ID}&am={price}&cu=INR"
+    # Naya aur behtar UPI URL format
+    merchant_name = "Movie Bot" 
+    transaction_note = f"Order_{call.from_user.id}"
+    
+    upi_params = {
+        "pa": UPI_ID,
+        "pn": merchant_name,
+        "am": price,
+        "cu": "INR",
+        "tn": transaction_note
+    }
+    # Isse URL sahi se encode hoga aur apps reject nahi karenge
+    upi_url = f"upi://pay?{urllib.parse.urlencode(upi_params)}"
+    
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
     
     caption = (f"💰 **Total Amount: ₹{price}**\n\n"
-               f"1️⃣ Scan the QR or pay to `{UPI_ID}`\n"
-               f"2️⃣ Send the **SCREENSHOT** here after payment.\n\n"
-               f"⏳ Admin will verify and activate your link.")
+               f"1️⃣ QR Code scan karein (GPay, PhonePe, Paytm).\n"
+               f"2️⃣ Payment ke baad **SCREENSHOT** yahan bhejein.\n\n"
+               f"✅ Sabhi Apps par ab scan kaam karega.")
     bot.send_photo(call.message.chat.id, qr_url, caption=caption)
 
 @bot.message_handler(content_types=['photo'])
