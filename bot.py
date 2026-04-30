@@ -167,19 +167,15 @@ def handle_start(message):
         bot.send_message(uid, text)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pay_'))
-@bot.callback_query_handler(func=lambda call: call.data.startswith('pay_'))
 def show_qr(call):
+    # Telegram ko click ka response dena zaroori hai
     bot.answer_callback_query(call.id)
     
     try:
-        # Data parse karna
-        data_parts = call.data.split('_')
-        if len(data_parts) < 4:
-            return
-            
-        _, fid, mins, price = data_parts
+        # Data split karna
+        _, fid, mins, price = call.data.split('_')
         uid = call.from_user.id
-
+        
         # Database update
         temp_pay_col.update_one(
             {"user_id": uid}, 
@@ -187,23 +183,27 @@ def show_qr(call):
             upsert=True
         )
         
-        # UPI String (QR ke liye)
-        upi_url = f"upi://pay?pa={UPI_ID}&pn=MovieBot&am={price}&cu=INR&tn=User_{uid}"
+        # --- FIXED UPI LOGIC ---
+        payee_name = "VRPRIME"  # Bina space ke name
+        txn_note = f"User{uid}" # Bina space ke note
         
-        # QR Code API
-        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
+        # Standard UPI URL (Sabse safe format)
+        upi_url = f"upi://pay?pa={UPI_ID}&pn={payee_name}&am={price}&cu=INR&tn={txn_note}"
         
-        # Final Caption (Isme ID copy ho jayegi)
-        caption = (f"💰 **Plan Amount: ₹{price}**\n\n"
-                   f"1️⃣ Niche di gayi UPI ID copy karein:\n"
+        # QR Code API (Proper encoding ke sath)
+        encoded_upi = urllib.parse.quote(upi_url, safe=':@?=&')
+        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={encoded_upi}"
+        
+        # Caption with Tap-to-Copy Feature
+        caption = (f"💰 **Amount: ₹{price}**\n\n"
+                   f"1️⃣ QR Scan karein ya ID copy karein:\n"
                    f"👉 `{UPI_ID}` (Tap to Copy)\n\n"
-                   f"2️⃣ Kisi bhi app (GPay, PhonePe, Paytm) se payment karein.\n"
-                   f"3️⃣ Payment ke baad **SCREENSHOT** yahan bhejein.\n\n"
-                   f"⚡ Admin turant verify karke link unlock kar dega.")
+                   f"2️⃣ Payment ke baad **Screenshot** yahan bhejein.\n\n"
+                   f"✅ QR ab sabhi Apps par scan hoga.")
 
-        # Button hatakar sirf ek Help button rakhte hain (Taki error na aaye)
+        # Help Button (Inline buttons mein upi:// allowed nahi hai, isliye sirf help rakha hai)
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("❓ Need Help / Contact Admin", url=f"tg://user?id={ADMIN_ID}"))
+        markup.add(InlineKeyboardButton("❓ Help / Contact Admin", url=f"tg://user?id={ADMIN_ID}"))
         
         bot.send_photo(
             call.message.chat.id, 
@@ -214,7 +214,7 @@ def show_qr(call):
         )
         
     except Exception as e:
-        bot.send_message(call.message.chat.id, f"⚠️ Server Error: {str(e)}")
+        bot.send_message(call.message.chat.id, f"⚠️ Error: {str(e)}")
 
 @bot.message_handler(content_types=['photo'])
 def process_screenshot(message):
