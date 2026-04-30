@@ -167,41 +167,54 @@ def handle_start(message):
         bot.send_message(uid, text)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pay_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pay_'))
 def show_qr(call):
-    # 1. Yeh line click ko activate karti hai
-    bot.answer_callback_query(call.id) 
+    bot.answer_callback_query(call.id)
     
     try:
-        _, fid, mins, price = call.data.split('_')
-        temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"mins": mins, "fid": fid, "price": price}}, upsert=True)
+        # Data parse karna
+        data_parts = call.data.split('_')
+        if len(data_parts) < 4:
+            return
+            
+        _, fid, mins, price = data_parts
+        uid = call.from_user.id
+
+        # Database update
+        temp_pay_col.update_one(
+            {"user_id": uid}, 
+            {"$set": {"mins": mins, "fid": fid, "price": price}}, 
+            upsert=True
+        )
         
-        # 2. Behtar UPI format
-        upi_params = {
-            "pa": UPI_ID,
-            "pn": "MovieBot",
-            "am": price,
-            "cu": "INR",
-            "tn": f"User_{call.from_user.id}"
-        }
-        upi_url = f"upi://pay?{urllib.parse.urlencode(upi_params)}"
+        # UPI String (QR ke liye)
+        upi_url = f"upi://pay?pa={UPI_ID}&pn=MovieBot&am={price}&cu=INR&tn=User_{uid}"
+        
+        # QR Code API
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
         
-        # 3. Click-to-copy caption (Markdown ke sath)
-        caption = (f"💰 **Total Amount: ₹{price}**\n\n"
-                   f"👉 UPI ID: `{UPI_ID}`\n"
-                   f"(Upar di gayi ID par touch karke copy karein)\n\n"
-                   f"1️⃣ QR Scan karein ya ID par pay karein.\n"
-                   f"2️⃣ Payment ke baad **Screenshot** bhejein.")
+        # Final Caption (Isme ID copy ho jayegi)
+        caption = (f"💰 **Plan Amount: ₹{price}**\n\n"
+                   f"1️⃣ Niche di gayi UPI ID copy karein:\n"
+                   f"👉 `{UPI_ID}` (Tap to Copy)\n\n"
+                   f"2️⃣ Kisi bhi app (GPay, PhonePe, Paytm) se payment karein.\n"
+                   f"3️⃣ Payment ke baad **SCREENSHOT** yahan bhejein.\n\n"
+                   f"⚡ Admin turant verify karke link unlock kar dega.")
 
+        # Button hatakar sirf ek Help button rakhte hain (Taki error na aaye)
         markup = InlineKeyboardMarkup()
-        markup.row(InlineKeyboardButton("🚀 Pay via UPI App", url=upi_url))
+        markup.add(InlineKeyboardButton("❓ Need Help / Contact Admin", url=f"tg://user?id={ADMIN_ID}"))
         
-        # 4. Parse mode add kiya gaya hai
-        bot.send_photo(call.message.chat.id, qr_url, caption=caption, parse_mode="Markdown", reply_markup=markup)
+        bot.send_photo(
+            call.message.chat.id, 
+            qr_url, 
+            caption=caption, 
+            parse_mode="Markdown", 
+            reply_markup=markup
+        )
         
     except Exception as e:
-        # Agar ab bhi click fail ho, toh bot error batayega
-        bot.send_message(call.message.chat.id, f"⚠️ Error: {str(e)}")
+        bot.send_message(call.message.chat.id, f"⚠️ Server Error: {str(e)}")
 
 @bot.message_handler(content_types=['photo'])
 def process_screenshot(message):
