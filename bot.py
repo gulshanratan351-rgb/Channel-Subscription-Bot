@@ -203,7 +203,6 @@ def show_qr(call):
         # Agar ab bhi click fail ho, toh bot error batayega
         bot.send_message(call.message.chat.id, f"⚠️ Error: {str(e)}")
 
-
 @bot.message_handler(content_types=['photo'])
 def process_screenshot(message):
     uid = message.from_user.id
