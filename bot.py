@@ -171,27 +171,34 @@ def show_qr(call):
     _, fid, mins, price = call.data.split('_')
     temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"mins": mins, "fid": fid, "price": price}}, upsert=True)
     
-    # Naya aur behtar UPI URL format
-    merchant_name = "Movie Bot" 
-    transaction_note = f"Order_{call.from_user.id}"
+    # Random ID for transaction to make it look unique
+    tr_id = str(uuid.uuid4().hex)[:12]
     
+    # PhonePe/GPay ke liye Full Professional Parameters
     upi_params = {
         "pa": UPI_ID,
-        "pn": merchant_name,
+        "pn": "OTT Subscription",  # Payee Name
+        "mc": "0000",               # Generic Merchant Code
+        "tr": tr_id,                # Transaction Ref
+        "tn": f"Ref_{call.from_user.id}", # Note
         "am": price,
-        "cu": "INR",
-        "tn": transaction_note
+        "cu": "INR"
     }
-    # Isse URL sahi se encode hoga aur apps reject nahi karenge
+    
+    # Encoding the URL properly
     upi_url = f"upi://pay?{urllib.parse.urlencode(upi_params)}"
     
+    # QR API URL
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
     
-    caption = (f"💰 **Total Amount: ₹{price}**\n\n"
-               f"1️⃣ QR Code scan karein (GPay, PhonePe, Paytm).\n"
-               f"2️⃣ Payment ke baad **SCREENSHOT** yahan bhejein.\n\n"
-               f"✅ Sabhi Apps par ab scan kaam karega.")
+    caption = (f"💰 **Amount to Pay: ₹{price}**\n\n"
+               f"✅ **GPay, PhonePe, Paytm** sab support karega.\n"
+               f"1️⃣ QR scan karein ya niche ID par pay karein:\n"
+               f"👉 `{UPI_ID}`\n\n"
+               f"2️⃣ Payment ke baad **Screenshot** yahan bhejein.")
+    
     bot.send_photo(call.message.chat.id, qr_url, caption=caption)
+
 
 @bot.message_handler(content_types=['photo'])
 def process_screenshot(message):
