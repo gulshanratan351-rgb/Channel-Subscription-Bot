@@ -171,34 +171,36 @@ def show_qr(call):
     _, fid, mins, price = call.data.split('_')
     temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"mins": mins, "fid": fid, "price": price}}, upsert=True)
     
-    # Random ID for transaction to make it look unique
+    # Unique Transaction ID
     tr_id = str(uuid.uuid4().hex)[:12]
     
-    # PhonePe/GPay ke liye Full Professional Parameters
+    # Professional UPI URL
     upi_params = {
         "pa": UPI_ID,
-        "pn": "OTT Subscription",  # Payee Name
-        "mc": "0000",               # Generic Merchant Code
-        "tr": tr_id,                # Transaction Ref
-        "tn": f"Ref_{call.from_user.id}", # Note
+        "pn": "Movie Subscription",
+        "mc": "0000",
+        "tr": tr_id,
+        "tn": f"User_{call.from_user.id}",
         "am": price,
         "cu": "INR"
     }
-    
-    # Encoding the URL properly
     upi_url = f"upi://pay?{urllib.parse.urlencode(upi_params)}"
     
-    # QR API URL
+    # QR Code API
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
     
+    # Caption with Click-to-Copy UPI ID
     caption = (f"💰 **Amount to Pay: ₹{price}**\n\n"
-               f"✅ **GPay, PhonePe, Paytm** sab support karega.\n"
-               f"1️⃣ QR scan karein ya niche ID par pay karein:\n"
-               f"👉 `{UPI_ID}`\n\n"
-               f"2️⃣ Payment ke baad **Screenshot** yahan bhejein.")
-    
-    bot.send_photo(call.message.chat.id, qr_url, caption=caption)
+               f"1️⃣ QR Code scan karein\n"
+               f"2️⃣ Ya niche di gayi UPI ID copy karein:\n"
+               f"👉 `{UPI_ID}` (Tap to Copy)\n\n"
+               f"3️⃣ Payment ke baad **Screenshot** yahan bhejein.")
 
+    # Payment Buttons (Direct App Open)
+    markup = InlineKeyboardMarkup()
+    markup.row(InlineKeyboardButton("🔗 Pay via UPI App", url=upi_url))
+    
+    bot.send_photo(call.message.chat.id, qr_url, caption=caption, parse_mode="Markdown", reply_markup=markup)
 
 @bot.message_handler(content_types=['photo'])
 def process_screenshot(message):
