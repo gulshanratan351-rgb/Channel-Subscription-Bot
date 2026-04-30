@@ -168,58 +168,41 @@ def handle_start(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pay_'))
 def show_qr(call):
-    # Sabse pehle Telegram ko batao click mil gaya
+    # 1. Yeh line click ko activate karti hai
     bot.answer_callback_query(call.id) 
     
     try:
-        # Check karein ki data sahi format mein hai ya nahi
-        data_parts = call.data.split('_')
-        if len(data_parts) < 4:
-            bot.send_message(call.message.chat.id, "❌ Error: Plan data corrupted. Please try again.")
-            return
-
-        _, fid, mins, price = data_parts
-        uid = call.from_user.id
-
-        # Database update (yahan error ho sakti hai, isliye block mein hai)
-        temp_pay_col.update_one(
-            {"user_id": uid}, 
-            {"$set": {"mins": mins, "fid": fid, "price": price}}, 
-            upsert=True
-        )
+        _, fid, mins, price = call.data.split('_')
+        temp_pay_col.update_one({"user_id": call.from_user.id}, {"$set": {"mins": mins, "fid": fid, "price": price}}, upsert=True)
         
-        # Unique ID for UPI
-        tr_id = str(uuid.uuid4().hex)[:10]
-        
-        # Professional UPI DeepLink
+        # 2. Behtar UPI format
         upi_params = {
             "pa": UPI_ID,
-            "pn": "OTT_Subscription",
+            "pn": "MovieBot",
             "am": price,
             "cu": "INR",
-            "tn": f"User_{uid}"
+            "tn": f"User_{call.from_user.id}"
         }
         upi_url = f"upi://pay?{urllib.parse.urlencode(upi_params)}"
-        
-        # QR Code API
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_url)}"
         
-        caption = (f"💰 **Amount: ₹{price}**\n\n"
-                   f"1️⃣ QR Scan karein ya UPI ID copy karein:\n"
-                   f"👉 `{UPI_ID}` (Tap to Copy)\n\n"
-                   f"2️⃣ Payment ke baad **Screenshot** yahan bhejein.")
+        # 3. Click-to-copy caption (Markdown ke sath)
+        caption = (f"💰 **Total Amount: ₹{price}**\n\n"
+                   f"👉 UPI ID: `{UPI_ID}`\n"
+                   f"(Upar di gayi ID par touch karke copy karein)\n\n"
+                   f"1️⃣ QR Scan karein ya ID par pay karein.\n"
+                   f"2️⃣ Payment ke baad **Screenshot** bhejein.")
 
         markup = InlineKeyboardMarkup()
-        markup.row(InlineKeyboardButton("🚀 Pay via UPI App (Direct)", url=upi_url))
+        markup.row(InlineKeyboardButton("🚀 Pay via UPI App", url=upi_url))
         
-        # Purana message edit karne ki jagah naya photo bhejein
+        # 4. Parse mode add kiya gaya hai
         bot.send_photo(call.message.chat.id, qr_url, caption=caption, parse_mode="Markdown", reply_markup=markup)
         
     except Exception as e:
-        # Agar koi error aaye toh Admin ko ya log mein dikhe
-        print(f"🔥 QR Error: {e}")
-        bot.send_message(call.message.chat.id, "⚠️ Server busy hai, thodi der baad koshish karein.")
-        
+        # Agar ab bhi click fail ho, toh bot error batayega
+        bot.send_message(call.message.chat.id, f"⚠️ Error: {str(e)}")
+
 
 @bot.message_handler(content_types=['photo'])
 def process_screenshot(message):
