@@ -150,11 +150,17 @@ def handle_start(message):
             else:
                 bot.send_message(uid, "❌ Link expired or removed.")
         else:
-            markup = InlineKeyboardMarkup()
-            markup.row(InlineKeyboardButton("💳 2 Days - ₹50", callback_data=f"pay_{fid}_2880_50"))
-            markup.row(InlineKeyboardButton("💳 7 Days - ₹100", callback_data=f"pay_{fid}_10080_100"))
-            markup.row(InlineKeyboardButton("💳 1 Month - ₹200", callback_data=f"pay_{fid}_43200_200"))
-            markup.row(InlineKeyboardButton("💳 3 Months - ₹400", callback_data=f"pay_{fid}_129600_400"))
+            markup = InlineKeyboardMarkup(row_width=2)
+
+markup.add(
+    InlineKeyboardButton("⚡ 2 Days\n₹50", callback_data=f"pay_{fid}_2880_50"),
+    InlineKeyboardButton("🔥 7 Days\n₹100", callback_data=f"pay_{fid}_10080_100")
+)
+
+markup.add(
+    InlineKeyboardButton("👑 1 Month\n₹200", callback_data=f"pay_{fid}_43200_200"),
+    InlineKeyboardButton("💎 3 Months\n₹400", callback_data=f"pay_{fid}_129600_400")
+)
 
             bot.send_message(uid, "🔒 **Membership Required!**\n\nSelect a plan to unlock this content:", reply_markup=markup)
     else:
